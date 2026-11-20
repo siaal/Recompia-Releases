@@ -27,7 +27,6 @@ namespace {
 constexpr const char* kTag = "pkp";
 constexpr size_t kMemberDigits = 32;
 
-constexpr uint32_t kPacibsp = 0xd503237fu;   // the first instruction of most of the game's functions
 
 // What the game does at a site; the hook's user value.
 enum class Site : uintptr_t {
@@ -65,7 +64,7 @@ enum class Site : uintptr_t {
                       // decided (once for the group), the goal skipped when they are not this run's
     Friendship,       // the friendship that completion step adds: skipped as decided at GoalCount
     GeneralGoal,      // a general request's completion, right before its town goal +1: a replay of another player's hand-in skips
-                      // it, so each hand-in counts once
+                      // it, so each hand-in counts once; the talker's own hand-in shares its reward with the group
     // ---- the session ----
     PastTitle,        // the title screen's continue: the co-op save loads without the title, and its unclean-exit mark is cleared
     SimStep,          // the simulation step: skipped while the session waits for a dropped member (the network tick keeps running)
@@ -79,8 +78,16 @@ enum class Site : uintptr_t {
     MemberScreen,     // the member screen: shut likewise
     // ---- the save ----
     SaveWrite,        // a member's own save write (three writers): held, the authority writes the co-op save
+    // ---- the bags: each member's is a record of ours (pkp_coop_bags.cpp); the game's writers that fight it are off (pkp_coop_bag.cpp) ----
     JoinBagSend,      // the host's side of a join's bag sync: it sends "no stored bag", so a member keeps its own bag instead of the
-                      // host's stale copy (pkp_coop_bag.cpp)
+                      // host's stale copy
+    MirrorFill,       // the host's fill of a joining visitor's mirror from its per-user table: the mirror gets the member's record
+    StageBagClear,    // the stage load's clear of the online bag (Cloud Island, a visitor in a session): skipped
+    BagToStorage,     // the stage load's step and the GameShare end that move the bag into the PC: skipped, the share bit cleared
+    HostBagStore,     // the host's moves between its per-user table and a bag (Cloud Island's own bag, the pre-save store): skipped
+    RefusalReset,     // a member's bag reset to the host's copy when the host refused a request: the reset is skipped
+    RefusalResetWait, // the same in kind 0xb's reply, whose skipped path also releases the request's wait (done by the hook)
+    BagScreen,        // the bag / container screen's frame: while it runs, an apply of the record waits
     // ---- the shops ----
     ShopGrant,        // a purchase's give on the buyer's process (the shop's buy, or a visitor's buy the host answered): logged for the
                       // group, so every member gets it too (pkp_coop_purchases.cpp)
@@ -89,8 +96,12 @@ enum class Site : uintptr_t {
     RecordSend,       // the talk-end record's send: one with items the busy queue would drop is kept and sent later (pkp_coop_linkqueue.cpp)
     QueueReset,       // the visitor's request queue reset at session start: also clears a strict request an earlier session left out,
                       // which refused every talk-end record with items (pkp_coop_linkqueue.cpp)
+    ChallengePay,     // the coins of a claimed challenge: on a member (the host's goal update pays it) only once per challenge, the
+                      // ledger pkp_coop_money.cpp also pays the group's claims from
     OfflineGoods,     // "this shop row is for offline play only" (the bag upgrades among them): no row is, in a session, so the shop
                       // lists them as it does offline (#780)
+    ShopTile,         // the PC menu's "a visitor may open the shop" test: a member opens it, which the member mask's cleared bit 23
+                      // (no per-row visitor lock) would otherwise grey out
     // ---- the discoveries ----
     DexScene,         // the "registered in the Pokédex" scene is queued on the finder's process: sent, so every member registers
                       // the creature and sees the same scene (pkp_coop_discovery.cpp)
@@ -100,6 +111,29 @@ enum class Site : uintptr_t {
                       // the member's world, so the contents' "placed near a character" tests see it (pkp_coop_placement.cpp)
     PlayScene,        // a content's "play scene" command: a scene the event queue refuses (a talk on) is asked for again until it
                       // plays, so a one-shot record's scene is not lost (pkp_coop_contents.cpp)
+    // ---- the unlocks ----
+    AreaGateRecord,   // the area gate record's "a session is open" guard: the write goes through, so a gate opened in a session can be
+                      // entered, and is shared with the group (pkp_coop_unlocks.cpp)
+    // ---- the ability check (pkp_coop_story.cpp) ----
+    AbilityCheck,     // the ability check's "a visitor reads the host's record" branch: a member reads its own bits, which hold the
+                      // group's abilities (the Environment Level panel on a teammate's PC menu)
+    // ---- the role answers (pkp_coop_role.cpp) ----
+    RoleAnswer,       // a role getter's call listed in pkp_coop_role_table.inc (a permission or display check): a member gets the host's
+                      // answer there, every other caller the game's own
+    // ---- the creature jobs (pkp_coop_jobs.cpp) ----
+    JobTick,          // the item-making tick's IsMine test: the authority also ticks a job on a creature a member holds, which
+                      // otherwise no process ticks
+    // ---- friendship (pkp_coop_friendship.cpp) ----
+    FriendGain,       // a friendship gain with a creature: a member's (outside Cloud Island) is made on the authority, whose record
+                      // is the group's
+    FriendFlag,       // script callback slot 175's friend record flag: a member's is set on the authority too
+    FriendTag,        // the name tag's friendship test: a member reads its copy of the host's records, as the host reads its own
+    // ---- the challenges: per-player claims (pkp_coop_money.cpp), a member's actions counted (pkp_coop_challenges.cpp) ----
+    ClaimVisitor,     // the PC's claim after its visitor test: a member's own claim pays it its coins (kPay's ledger keeps it to once)
+    BuyCount,         // the "buy items" challenge count after its visitor test: a member's buy counts for the group
+    // ---- the creature events (pkp_coop_feed.cpp) ----
+    TalkedTo,         // the contents scheduler's "talked to" notice, which skips a visitor: a member's talk is posted on the
+                      // authority, so content records waiting on that talk run for the group
 };
 
 struct CoopSite {
@@ -144,8 +178,23 @@ constexpr CoopSite kSites[] = {
     {{0x245200, kPacibsp, true}, Site::SaveWrite},
     {{0x5a8a34, kPacibsp, true}, Site::SaveWrite},
     {{0x5728b4, 0xf9400660u, false}, Site::JoinBagSend},     // ldr x0, [x19, #8] (before the found flag is written)
+    {{0x575644, kPacibsp, true}, Site::MirrorFill},
+    {{0x5afee0, kPacibsp, true}, Site::StageBagClear},
+    {{0x5affe0, kPacibsp, true}, Site::BagToStorage},
+    {{0x5b0d60, kPacibsp, true}, Site::BagToStorage},
+    {{0x5b0a60, kPacibsp, true}, Site::HostBagStore},
+    {{0x5af6a0, kPacibsp, true}, Site::HostBagStore},
+    {{0x2288c4, 0xb40002a0u, false}, Site::RefusalResetWait}, // cbz x0 (x0 = the selected bag) in 0x226280's kind 0xb reply
+    {{0x228f38, 0xb4000620u, false}, Site::RefusalReset},     // the same, kind 0xf
+    {{0x22a298, 0xb40002c0u, false}, Site::RefusalReset},     // kind 0x1a
+    {{0x2267fc, 0xb4000660u, false}, Site::RefusalReset},     // kind 0x1d
+    {{0x226684, 0xb4001220u, false}, Site::RefusalReset},     // kind 0x1e
+    {{0x226868, 0xb4000300u, false}, Site::RefusalReset},     // kind 0x1f
+    {{0xfeee78, kPacibsp, true}, Site::BagScreen},
     {{0xe889f8, kPacibsp, true}, Site::ShopGrant},
     {{0xe87260, kPacibsp, true}, Site::OfflineGoods},
+    {{0xe8d428, kPacibsp, true}, Site::ShopTile},
+    {{0x637480, kPacibsp, true}, Site::ChallengePay},
     {{0x3b9060, kPacibsp, true}, Site::DexScene},
     {{0x45f2a0, 0x12003c28u, true}, Site::HabitatScene},     // and w8, w1, #0xffff
     {{0x313418, kPacibsp, true}, Site::VisitorSync},
@@ -153,6 +202,26 @@ constexpr CoopSite kSites[] = {
     {{0x214954, 0xb0019a68u, true}, Site::QueueReset},       // adrp x8, 0x3561000
     {{0x13596c, 0x12003c29u, true}, Site::PlacedNotice},     // and w9, w1, #0xffff
     {{0x12b544, 0xb9400408u, true}, Site::PlayScene},        // ldr w8, [x0, #4]
+    {{0x5c05c0, 0x37000140u, false}, Site::AreaGateRecord},  // tbnz w0, #0, 0x5c05e8 (w0 = IsOnline's answer)
+    // the ability check (pkp_coop_story.cpp)
+    {{0x1140e8, 0x3617fb08u, false}, Site::AbilityCheck},    // tbz w8, #2, 0x114048 (w8 = GM+0x90, the session bits)
+    // ---- the role answers (pkp_coop_role.cpp): one midhook per row (after its `bl`, or at its session-bit test) ----
+#define PKP_ROLE_ROW(ret, getter, word, tag, what) {{ret, word, false}, Site::RoleAnswer},
+#define PKP_ROLE_BIT(site, reg, bit, word, tag, what) {{site, word, false}, Site::RoleAnswer},
+#include "core/pkp_coop_role_table.inc"
+#undef PKP_ROLE_BIT
+#undef PKP_ROLE_ROW
+    // the creature jobs (pkp_coop_jobs.cpp)
+    {{0x3b39a8, 0x36001540u, false}, Site::JobTick},         // tbz w0, #0, 0x3b3c50 (w0 = IsMine's answer)
+    // friendship
+    {{0x3a89fc, kPacibsp, true}, Site::FriendGain},
+    {{0x4ab358, 0x36000120u, false}, Site::FriendFlag},      // tbz w0, #0, 0x4ab37c (w0 = Cloud Island, w19 = the chara)
+    {{0x3b7cd0, 0x36000540u, false}, Site::FriendTag},       // tbz w0, #0, 0x3b7d78 (w0 = Cloud Island, on a visitor)
+    // the challenges
+    {{0x645d18, 0x37000080u, false}, Site::ClaimVisitor},    // tbnz w0, #0, 0x645d28 (w0 = the visitor test 0x376c4; kPay at 0x645d24)
+    {{0x643938, 0x37001220u, false}, Site::BuyCount},        // tbnz w0, #0, 0x643b7c (w0 = the visitor test 0x376c4)
+    // the creature events (pkp_coop_feed.cpp)
+    {{0x1355ec, kPacibsp, true}, Site::TalkedTo},
 };
 constexpr size_t kSiteCount = sizeof kSites / sizeof kSites[0];
 
@@ -161,6 +230,7 @@ struct State {
     HookSet* hooks = nullptr;
     uint32_t ids[kSiteCount] = {};   // all 0: not coop mode, or not installed
     CoopLaunch launch;
+    uint8_t key[coop::kMemberKeyBytes] = {};   // launch.member as bytes (the hex pairs in order)
     std::atomic<bool> armed{false};
     std::atomic<bool> checked{false};
     std::atomic<bool> in_game{false};   // play mode's, from its frame (main thread) for the game-frame tick
@@ -172,7 +242,7 @@ State& st() {
 
 // Every co-op site (user: its Site), once the frame callback armed the hooks: the part of co-op that owns the site does its work there.
 // A site no part owns yet passes through (returns 0: the game's own code runs).
-int hook(::Ctx* c, uint64_t, void* user) {
+int hook(::Ctx* c, uint64_t addr, void* user) {
     if (!st().armed.load(std::memory_order_acquire)) return 0;
     switch (static_cast<Site>(reinterpret_cast<uintptr_t>(user))) {
         case Site::MaskStart: return coop::story::on_mask_start(c);
@@ -198,7 +268,16 @@ int hook(::Ctx* c, uint64_t, void* user) {
         case Site::AreaMove: return coop::travel::on_area_move(c);
         case Site::ShopGrant: return coop::purchases::on_grant(c);
         case Site::OfflineGoods: return coop::purchases::on_offline_only(c);
+        case Site::ShopTile: return coop::purchases::on_shop_tile(c);
+        case Site::ChallengePay: return coop::money::on_pay(c);
         case Site::JoinBagSend: return coop::bag::on_join_bag_send(c);
+        case Site::MirrorFill: return coop::bags::on_mirror_fill(c);
+        case Site::StageBagClear: return coop::bag::on_stage_bag_clear(c);
+        case Site::BagToStorage: return coop::bag::on_bag_to_storage(c);
+        case Site::HostBagStore: return coop::bag::on_host_bag_store(c);
+        case Site::RefusalReset: return coop::bag::on_refusal_reset(c, false);
+        case Site::RefusalResetWait: return coop::bag::on_refusal_reset(c, true);
+        case Site::BagScreen: return coop::bags::on_bag_screen(c);
         case Site::DexScene: return coop::discovery::on_dex_scene(c);
         case Site::HabitatScene: return coop::discovery::on_habitat_scene(c);
         case Site::VisitorSync: return coop::held::on_visitor_sync(c);
@@ -206,6 +285,16 @@ int hook(::Ctx* c, uint64_t, void* user) {
         case Site::QueueReset: return coop::linkqueue::on_session_reset(c);
         case Site::PlacedNotice: return coop::placement::on_placed_notice(c);
         case Site::PlayScene: return coop::contents::on_play_scene(c);
+        case Site::AreaGateRecord: return coop::unlocks::on_area_gate_record(c);
+        case Site::AbilityCheck: return coop::story::on_ability_check(c);
+        case Site::RoleAnswer: return coop::answers::on_answer(c, addr - st().base);
+        case Site::JobTick: return coop::jobs::on_job_tick(c);
+        case Site::FriendGain: return coop::friendship::on_add_points(c);
+        case Site::FriendFlag: return coop::friendship::on_flag_17a(c);
+        case Site::FriendTag: return coop::friendship::on_name_tag(c);
+        case Site::ClaimVisitor: return coop::money::on_claim_visitor(c);
+        case Site::BuyCount: return coop::challenges::on_buy_visitor(c);
+        case Site::TalkedTo: return coop::feed::on_talked_to(c);
         default: return 0;
     }
 }
@@ -229,7 +318,11 @@ void install(const FeatureInstall& in) {
     }
     launch.members = static_cast<int>(settings::get_int(settings::Key::CoopMembers));
     s.launch = launch;
+    auto nib = [](char ch) { return ch <= '9' ? ch - '0' : ch - 'a' + 10; };   // coop_launch_parse left lower-case hex digits only
+    for (size_t i = 0; i < coop::kMemberKeyBytes; ++i)
+        s.key[i] = static_cast<uint8_t>(nib(launch.member[2 * i]) << 4 | nib(launch.member[2 * i + 1]));
     s.base = in.base;
+    coop::wirelog::install();
     s.hooks = &in.hooks;
     s.armed.store(false);
     s.checked.store(false);
@@ -275,7 +368,10 @@ void game_frame(::Ctx* c) {
     coop::discovery::tick(c, s.in_game.load(std::memory_order_relaxed));
     coop::unlocks::tick(c, s.in_game.load(std::memory_order_relaxed));
     coop::purchases::tick(c, s.in_game.load(std::memory_order_relaxed));
+    coop::money::tick(c, s.in_game.load(std::memory_order_relaxed));
+    coop::bags::tick(c);
     coop::talk::tick();
+    coop::gimmicks::tick(c, s.in_game.load(std::memory_order_relaxed));
     coop::travel::tick(c);
     coop::catchup::tick(c, s.in_game.load(std::memory_order_relaxed));
     coop::linkqueue::tick(c, s.in_game.load(std::memory_order_relaxed));
@@ -284,6 +380,11 @@ void game_frame(::Ctx* c) {
     coop::contents::tick(c, s.in_game.load(std::memory_order_relaxed));
     coop::gate::tick(s.in_game.load(std::memory_order_relaxed));
     coop::trace::tick(s.in_game.load(std::memory_order_relaxed));
+    coop::digest::tick(c, s.in_game.load(std::memory_order_relaxed));
+    coop::records::tick(s.in_game.load(std::memory_order_relaxed));
+    coop::answers::tick();
+    coop::friendship::tick(c);
+    coop::feed::tick(c, s.in_game.load(std::memory_order_relaxed));
 }
 
 void remove() {   // the registry has removed the hooks
@@ -293,7 +394,9 @@ void remove() {   // the registry has removed the hooks
     s.in_game.store(false);
     for (uint32_t& h : s.ids) h = 0;
     s.hooks = nullptr;
+    coop::bags::reset();   // first: it writes its records' files under this player's member key
     s.launch = {};
+    for (uint8_t& b : s.key) b = 0;
     coop::link::reset();
     coop::story::reset();
     coop::quests::reset();
@@ -304,18 +407,27 @@ void remove() {   // the registry has removed the hooks
     coop::discovery::reset();
     coop::unlocks::reset();
     coop::purchases::reset();
+    coop::money::reset();
     coop::talk::reset();
+    coop::gimmicks::reset();
     coop::travel::reset();
     coop::catchup::reset();
     coop::notice::reset();
     coop::curtain::reset();
     coop::gate::reset();
     coop::trace::reset();
+    coop::digest::reset();
+    coop::wirelog::reset();
     coop::held::reset();
     coop::linkqueue::reset();
     coop::placement::reset();
     coop::contents::reset();
+    coop::friendship::reset();
+    coop::feed::reset();
     coop::session::reset();
+    coop::records::reset();
+    coop::answers::reset();
+    coop::jobs::reset();
 }
 
 }  // namespace
@@ -326,6 +438,7 @@ uint64_t base() { return st().base; }
 CoopRole role() { return st().launch.role; }
 int members() { return st().launch.members; }
 const std::string& member_key() { return st().launch.member; }
+const uint8_t* member_key_bytes() { return st().key; }
 
 uint8_t session_bits() {
     const uint64_t game = guest::rd<uint64_t>(base() + layout::kGameState);
