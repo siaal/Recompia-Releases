@@ -28,6 +28,7 @@ mod exe_icon;
 mod achievements;
 mod achievements_cmds;
 mod fsutil;
+mod local_files;
 mod gamebuild;
 mod guard;
 mod harness;
@@ -69,6 +70,7 @@ use pokopia_relay as relay;
 mod relay_cmds;
 mod release_names;
 mod releases;
+mod rename_migrate;
 mod repair;
 mod repair_cmds;
 mod rollback;
@@ -87,10 +89,14 @@ mod shader_archive;
 mod shaders;
 mod steam;
 mod steam_cmds;
+mod steam_dirs;
+mod steam_vdf;
 mod states;
 mod storage;
 #[cfg(debug_assertions)]
 mod testhook;
+mod themes;
+mod themes_cmds;
 mod unpack;
 mod update;
 mod update_apply;
@@ -98,6 +104,7 @@ mod update_game;
 mod update_cmds;
 mod window;
 mod writecheck;
+mod zipin;
 mod zipout;
 mod zonith;
 mod zonith_cmds;
@@ -127,7 +134,15 @@ fn main() {
         .on_window_event(window::on_event)
         // the save editor's game data (saveedit_data.rs), read only, from the game folder's pokohex_data
         .register_uri_scheme_protocol(saveedit_data::PROTOCOL, |ctx, request| saveedit_data::respond(&game_dir(ctx.app_handle()), &request))
+        // the player's themes (themes.rs): their pictures, read only, from the themes folder
+        .register_uri_scheme_protocol(themes::PROTOCOL, |_, request| match themes::dir() {
+            Some(dir) => local_files::respond(dir, &request),
+            None => tauri::http::Response::builder().status(404).body(Vec::new()).unwrap_or_else(|_| tauri::http::Response::new(Vec::new())),
+        })
         .setup(|app| {
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                themes::init(dir.join("themes"));
+            }
             if let Some(window) = app.get_webview_window("main") {
                 // a failed screen query only means the window keeps its default size: it must never stop the launcher from starting
                 let _ = window::fit_window(&window, load_config(app.handle()).window);
@@ -137,7 +152,8 @@ fn main() {
             if let Err(e) = settings::reset_link_play(&game_dir(app.handle())) {
                 eprintln!("Link Play reset: {e}");
             }
-            // what the last update left: its folder, the old launcher (still exiting after a restart), a cut-off swap
+            // what the last update left: its folder, the old launcher (still exiting after a restart), a cut-off swap; then the first
+            // start under the launcher's new file name
             if let Some(launcher) = launcher_path() {
                 let handle = app.handle().clone();
                 let st = app.updates().inner().clone();
@@ -145,6 +161,7 @@ fn main() {
                 std::thread::spawn(move || {
                     let (root, game) = (exe_dir(), game_dir(&handle));
                     update::clean_start(&root, &update::old_files(&launcher, &game));
+                    rename_migrate::on_start(&handle, &launcher);
                     st.set_cleaning(false);
                     branding::on_start(&load_config(&handle));
                 });
@@ -209,6 +226,7 @@ fn main() {
             profile_cmds::profile_select,
             coop_cmds::coop_list,
             coop_cmds::coop_create,
+            coop_cmds::coop_create_split,
             coop_cmds::coop_add_member,
             coop_cmds::coop_remove_member,
             coop_cmds::coop_invite,
@@ -232,6 +250,12 @@ fn main() {
             saveedit_cmds::save_edit_data_ready,
             saveedit_cmds::save_edit_prepare,
             branding_cmds::apply_branding,
+            themes_cmds::list_themes,
+            themes_cmds::add_theme,
+            themes_cmds::remove_theme_pack,
+            themes_cmds::set_theme,
+            themes_cmds::open_themes_dir,
+            dialogs::pick_theme_file,
             steam_cmds::steam_status,
             steam_cmds::steam_add,
             steam_cmds::steam_remove,
