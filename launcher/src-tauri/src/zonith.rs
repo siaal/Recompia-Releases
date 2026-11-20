@@ -3,13 +3,14 @@
 //! and plays it. This file is the pure part: the release list, which release this platform installs, what the launcher downloaded
 //! (`<data>/zonith/current.json`) and the progress the page shows. The commands are zonith_cmds.rs.
 
-use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 
 /// The one place Zonith's repository is named (a macro so RELEASES_URL can be built from it at compile time).
 macro_rules! zonith_repo {
     () => {
-        "Dittobyte/Zonith"
+        "siaal/Zonith-Releases"
     };
 }
 
@@ -18,10 +19,18 @@ macro_rules! zonith_repo {
 pub const REPO: &str = zonith_repo!();
 
 /// Unauthenticated: until the repository is public this answers 404, which is "not public yet".
-pub const RELEASES_URL: &str = concat!("https://api.github.com/repos/", zonith_repo!(), "/releases?per_page=20");
+pub const RELEASES_URL: &str = concat!(
+    "https://api.github.com/repos/",
+    zonith_repo!(),
+    "/releases?per_page=20"
+);
 
 /// The setup file this platform downloads (by the end of its name).
-pub const ASSET_SUFFIX: &str = if cfg!(windows) { "-windows.zip" } else { ".AppImage" };
+pub const ASSET_SUFFIX: &str = if cfg!(windows) {
+    "-windows.zip"
+} else {
+    ".AppImage"
+};
 
 /// Zonith has Windows and Linux builds only.
 pub const SUPPORTED: bool = cfg!(any(windows, target_os = "linux"));
@@ -35,72 +44,75 @@ pub const WINDOWS_EXE: &str = "TotK-Setup.exe";
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct GhAsset {
-    pub name: String,
+    pub name:                 String,
     #[serde(default)]
-    pub size: u64,
+    pub size:                 u64,
     #[serde(default)]
     pub browser_download_url: String,
     /// "sha256:<hex>", which GitHub lists for assets
     #[serde(default)]
-    pub digest: Option<String>,
+    pub digest:               Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct GhRelease {
-    pub tag_name: String,
+    pub tag_name:     String,
     #[serde(default)]
-    pub name: Option<String>,
+    pub name:         Option<String>,
     #[serde(default)]
     pub published_at: Option<String>,
     #[serde(default)]
-    pub body: Option<String>,
+    pub body:         Option<String>,
     #[serde(default)]
-    pub html_url: String,
+    pub html_url:     String,
     #[serde(default)]
-    pub prerelease: bool,
+    pub prerelease:   bool,
     #[serde(default)]
-    pub draft: bool,
+    pub draft:        bool,
     /// GitHub's immutable release: its files and tag can no longer change (verify_origin installs no other)
     #[serde(default)]
-    pub immutable: bool,
+    pub immutable:    bool,
     #[serde(default)]
-    pub assets: Vec<GhAsset>,
+    pub assets:       Vec<GhAsset>,
 }
 
 impl GhRelease {
     fn title(&self) -> String {
-        self.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Zonith {}", self.tag_name))
+        self.name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("Zonith {}", self.tag_name))
     }
 }
 
 /// A release for the What's New page.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReleaseRow {
-    pub tag: String,
-    pub name: String,
-    pub date: String,
-    pub body: String,
-    pub url: String,
+    pub tag:        String,
+    pub name:       String,
+    pub date:       String,
+    pub body:       String,
+    pub url:        String,
     pub prerelease: bool,
 }
 
 /// The release this platform installs, plus what the download needs (not sent).
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Latest {
-    pub tag: String,
-    pub name: String,
-    pub date: String,
-    pub url: String,
+    pub tag:          String,
+    pub name:         String,
+    pub date:         String,
+    pub url:          String,
     /// the setup file's name
-    pub asset: String,
-    pub size: u64,
+    pub asset:        String,
+    pub size:         u64,
     #[serde(skip)]
     pub download_url: String,
     #[serde(skip)]
-    pub sha256: String,
+    pub sha256:       String,
     /// the release is immutable on GitHub
     #[serde(skip)]
-    pub immutable: bool,
+    pub immutable:    bool,
 }
 
 pub fn parse_releases(body: &[u8]) -> Result<Vec<GhRelease>, String> {
@@ -112,11 +124,23 @@ pub fn parse_releases(body: &[u8]) -> Result<Vec<GhRelease>, String> {
 pub fn rows(list: &[GhRelease]) -> Vec<ReleaseRow> {
     let mut out: Vec<ReleaseRow> = list
         .iter()
-        .map(|r| ReleaseRow { tag: r.tag_name.clone(), name: r.title(), date: r.published_at.clone().unwrap_or_default(), body: r.body.clone().unwrap_or_default(), url: r.html_url.clone(), prerelease: r.prerelease })
+        .map(|r| ReleaseRow {
+            tag:        r.tag_name.clone(),
+            name:       r.title(),
+            date:       r.published_at.clone().unwrap_or_default(),
+            body:       r.body.clone().unwrap_or_default(),
+            url:        r.html_url.clone(),
+            prerelease: r.prerelease,
+        })
         .collect();
-    out.sort_by(|a, b| match (crate::releases::Version::parse(&a.tag), crate::releases::Version::parse(&b.tag)) {
-        (Some(x), Some(y)) => y.cmp(&x),
-        _ => std::cmp::Ordering::Equal,
+    out.sort_by(|a, b| {
+        match (
+            crate::releases::Version::parse(&a.tag),
+            crate::releases::Version::parse(&b.tag),
+        ) {
+            (Some(x), Some(y)) => y.cmp(&x),
+            _ => std::cmp::Ordering::Equal,
+        }
     });
     out
 }
@@ -124,7 +148,8 @@ pub fn rows(list: &[GhRelease]) -> Vec<ReleaseRow> {
 /// The lower-case hex of a GitHub "sha256:<hex>" digest; None for any other form.
 pub fn parse_digest(d: &str) -> Option<String> {
     let hex = d.trim().strip_prefix("sha256:")?;
-    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hex.to_ascii_lowercase())
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
 }
 
 /// The newest non-prerelease with this platform's setup and its digest (an asset without one cannot be checked, so it is skipped).
@@ -132,7 +157,10 @@ pub fn latest(list: &[GhRelease], suffix: &str) -> Option<Latest> {
     list.iter()
         .filter(|r| !r.prerelease && crate::releases::Version::parse(&r.tag_name).is_some())
         .filter_map(|r| {
-            let a = r.assets.iter().find(|a| a.name.ends_with(suffix) && !a.browser_download_url.is_empty())?;
+            let a = r
+                .assets
+                .iter()
+                .find(|a| a.name.ends_with(suffix) && !a.browser_download_url.is_empty())?;
             let sha256 = parse_digest(a.digest.as_deref()?)?;
             Some(Latest {
                 tag: r.tag_name.clone(),
@@ -146,18 +174,26 @@ pub fn latest(list: &[GhRelease], suffix: &str) -> Option<Latest> {
                 immutable: r.immutable,
             })
         })
-        .max_by(|a, b| crate::releases::Version::parse(&a.tag).cmp(&crate::releases::Version::parse(&b.tag)))
+        .max_by(|a, b| {
+            crate::releases::Version::parse(&a.tag).cmp(&crate::releases::Version::parse(&b.tag))
+        })
 }
 
 /// The proof, before anything is downloaded, that `l`'s setup with checksum `l.sha256` is the release's own: the release is immutable,
 /// and `attested` (attest.rs `verify_release` for REPO) accepts the setup's build attestation. Err: the player's message.
-pub fn verify_origin(l: &Latest, attested: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+pub fn verify_origin(
+    l: &Latest,
+    attested: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
     if !l.immutable {
         eprintln!("zonith.verify_origin.not_immutable tag={}", l.tag);
         return Err(format!("Zonith {} is not locked (immutable) on GitHub, so its files could still be replaced. The launcher only installs locked releases. Nothing was changed.", l.tag));
     }
     if let Err(e) = attested(&l.sha256) {
-        eprintln!("zonith.verify_origin.not_attested tag={} asset={} reason={}", l.tag, l.asset, e);
+        eprintln!(
+            "zonith.verify_origin.not_attested tag={} asset={} reason={}",
+            l.tag, l.asset, e
+        );
         return Err(format!("The Zonith setup {} could not be proven to be built by {}'s release workflow: {}. Nothing was changed.", l.tag, REPO, e));
     }
     eprintln!("zonith.verify_origin.ok tag={} asset={}", l.tag, l.asset);
@@ -166,13 +202,20 @@ pub fn verify_origin(l: &Latest, attested: impl FnOnce(&str) -> Result<(), Strin
 
 /// The tag as a folder name.
 pub fn safe_tag(tag: &str) -> String {
-    let t: String = tag.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).collect();
-    if t.is_empty() || t.chars().all(|c| c == '.') { "latest".into() } else { t }
+    let t: String = tag
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    if t.is_empty() || t.chars().all(|c| c == '.') {
+        "latest".into()
+    } else {
+        t
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Current {
-    pub tag: String,
+    pub tag:   String,
     /// the release file it came from (the AppImage on Linux, the zip on Windows)
     #[serde(default)]
     pub asset: String,
@@ -181,12 +224,20 @@ pub struct Current {
 /// The setup app to start, in the launcher's Zonith folder: Windows `<tag>/TotK-Setup-windows/TotK-Setup.exe`; Linux the AppImage at the
 /// folder's top, always at the same path, because the rebuild command Zonith writes into an install starts that file (docs/installer.md).
 pub fn app_path(zonith: &Path, c: &Current) -> std::path::PathBuf {
-    if cfg!(windows) { zonith.join(safe_tag(&c.tag)).join(WINDOWS_ROOT).join(WINDOWS_EXE) } else { zonith.join(&c.asset) }
+    if cfg!(windows) {
+        zonith
+            .join(safe_tag(&c.tag))
+            .join(WINDOWS_ROOT)
+            .join(WINDOWS_EXE)
+    } else {
+        zonith.join(&c.asset)
+    }
 }
 
 /// What the launcher downloaded: current.json, when its setup app is still there.
 pub fn read_current(zonith: &Path) -> Option<Current> {
-    let c: Current = serde_json::from_str(&std::fs::read_to_string(zonith.join(CURRENT_FILE)).ok()?).ok()?;
+    let c: Current =
+        serde_json::from_str(&std::fs::read_to_string(zonith.join(CURRENT_FILE)).ok()?).ok()?;
     if c.tag.is_empty() {
         return None;
     }
@@ -202,10 +253,10 @@ pub fn update_available(installed: &str, tag: &str) -> bool {
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct ZonithProgress {
     /// download | unpack | done | error | cancelled
-    pub state: String,
-    pub done: Option<u64>,
-    pub total: Option<u64>,
-    pub pct: Option<f64>,
+    pub state:   String,
+    pub done:    Option<u64>,
+    pub total:   Option<u64>,
+    pub pct:     Option<f64>,
     pub message: Option<String>,
 }
 
@@ -213,14 +264,33 @@ const DOWNLOAD_SHARE: f64 = 90.0;
 
 impl ZonithProgress {
     pub fn download(done: u64, total: u64) -> Self {
-        let frac = if total > 0 { (done as f64 / total as f64).min(1.0) } else { 0.0 };
-        ZonithProgress { state: "download".into(), done: Some(done), total: Some(total), pct: Some((DOWNLOAD_SHARE * frac * 10.0).round() / 10.0), message: None }
+        let frac = if total > 0 {
+            (done as f64 / total as f64).min(1.0)
+        } else {
+            0.0
+        };
+        ZonithProgress {
+            state:   "download".into(),
+            done:    Some(done),
+            total:   Some(total),
+            pct:     Some((DOWNLOAD_SHARE * frac * 10.0).round() / 10.0),
+            message: None,
+        }
     }
     pub fn unpack() -> Self {
-        ZonithProgress { state: "unpack".into(), pct: Some(DOWNLOAD_SHARE), ..Default::default() }
+        ZonithProgress {
+            state: "unpack".into(),
+            pct: Some(DOWNLOAD_SHARE),
+            ..Default::default()
+        }
     }
     pub fn end(state: &str, message: Option<String>) -> Self {
-        ZonithProgress { state: state.into(), pct: (state == "done").then_some(100.0), message, ..Default::default() }
+        ZonithProgress {
+            state: state.into(),
+            pct: (state == "done").then_some(100.0),
+            message,
+            ..Default::default()
+        }
     }
 }
 
@@ -234,7 +304,10 @@ pub fn holds_install(dir: &Path) -> bool {
         if d.join(INSTALL_MARKER).is_file() {
             return true;
         }
-        for e in std::fs::read_dir(&d).map(|r| r.flatten().collect::<Vec<_>>()).unwrap_or_default() {
+        for e in std::fs::read_dir(&d)
+            .map(|r| r.flatten().collect::<Vec<_>>())
+            .unwrap_or_default()
+        {
             if e.file_type().is_ok_and(|t| t.is_dir()) {
                 todo.push(e.path());
             }
@@ -250,7 +323,10 @@ pub fn holds_install(dir: &Path) -> bool {
 /// working directory in it (as the setup window does), and a folder that will not rename is left for the next update rather than half
 /// deleted under the window.
 pub fn remove_old(zonith: &Path, keep: &str) {
-    for e in std::fs::read_dir(zonith).map(|r| r.flatten().collect::<Vec<_>>()).unwrap_or_default() {
+    for e in std::fs::read_dir(zonith)
+        .map(|r| r.flatten().collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
         let name = e.file_name().to_string_lossy().into_owned();
         if !e.file_type().is_ok_and(|t| t.is_dir()) || name == keep {
             continue;
@@ -259,7 +335,11 @@ pub fn remove_old(zonith: &Path, keep: &str) {
         if crate::releases::Version::parse(tag).is_none() || holds_install(&e.path()) {
             continue;
         }
-        let gone = if name.ends_with(".old") { e.path() } else { zonith.join(format!("{name}.old")) };
+        let gone = if name.ends_with(".old") {
+            e.path()
+        } else {
+            zonith.join(format!("{name}.old"))
+        };
         if gone == e.path() || std::fs::rename(e.path(), &gone).is_ok() {
             let _ = std::fs::remove_dir_all(&gone);
         }
@@ -268,8 +348,9 @@ pub fn remove_old(zonith: &Path, keep: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     const HEX: &str = "9a44d60023efd21255ba43b88ca72480d81330899ace099845df3e72da0917b2";
 
@@ -289,7 +370,10 @@ mod tests {
     #[test]
     fn digests() {
         assert_eq!(parse_digest(&format!("sha256:{HEX}")).as_deref(), Some(HEX));
-        assert_eq!(parse_digest(&format!("sha256:{}", HEX.to_uppercase())).as_deref(), Some(HEX));
+        assert_eq!(
+            parse_digest(&format!("sha256:{}", HEX.to_uppercase())).as_deref(),
+            Some(HEX)
+        );
         assert!(parse_digest("sha512:abcd").is_none());
         assert!(parse_digest("sha256:abc").is_none());
     }
@@ -299,13 +383,29 @@ mod tests {
         let l = list();
         assert_eq!(l.len(), 3, "the draft is dropped");
         let w = latest(&l, "-windows.zip").unwrap();
-        assert_eq!((w.tag.as_str(), w.name.as_str(), w.asset.as_str(), w.sha256.as_str()), ("v0.5.0", "Zonith v0.5.0", "TotK-Setup-0.5.0-windows.zip", HEX));
+        assert_eq!(
+            (
+                w.tag.as_str(),
+                w.name.as_str(),
+                w.asset.as_str(),
+                w.sha256.as_str()
+            ),
+            (
+                "v0.5.0",
+                "Zonith v0.5.0",
+                "TotK-Setup-0.5.0-windows.zip",
+                HEX
+            )
+        );
         assert_eq!(latest(&l, ".AppImage").unwrap().tag, "v0.5.1");
         assert!(latest(&l, ".dmg").is_none());
         let sent = serde_json::to_value(&w).unwrap();
         assert!(sent.get("sha256").is_none() && sent.get("download_url").is_none());
         let r = rows(&l);
-        assert_eq!(r.iter().map(|r| r.tag.as_str()).collect::<Vec<_>>(), ["v0.6.0-rc.1", "v0.5.1", "v0.5.0"]);
+        assert_eq!(
+            r.iter().map(|r| r.tag.as_str()).collect::<Vec<_>>(),
+            ["v0.6.0-rc.1", "v0.5.1", "v0.5.0"]
+        );
         assert!(r[0].prerelease && !r[1].prerelease);
     }
 
@@ -319,17 +419,48 @@ mod tests {
         .unwrap();
         let l = latest(&locked, ".AppImage").unwrap();
         assert!(l.immutable);
-        assert!(!latest(&list(), ".AppImage").unwrap().immutable, "a release without the field is not immutable");
+        assert!(
+            !latest(&list(), ".AppImage").unwrap().immutable,
+            "a release without the field is not immutable"
+        );
 
         let asked = std::cell::Cell::new(false);
-        let open = Latest { immutable: false, ..l.clone() };
-        let e = verify_origin(&open, |_| { asked.set(true); Ok(()) }).unwrap_err();
-        assert!(e.contains("not locked") && e.contains("Nothing was changed"), "{e}");
-        assert!(!asked.get(), "a release that is not immutable is refused before its attestation is looked up");
+        let open = Latest {
+            immutable: false,
+            ..l.clone()
+        };
+        let e = verify_origin(&open, |_| {
+            asked.set(true);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(
+            e.contains("not locked") && e.contains("Nothing was changed"),
+            "{e}"
+        );
+        assert!(
+            !asked.get(),
+            "a release that is not immutable is refused before its attestation is looked up"
+        );
         let e = verify_origin(&l, |_| Err("no build attestation".into())).unwrap_err();
-        assert!(e.contains("no build attestation") && e.contains(REPO), "{e}");
-        assert_eq!(verify_origin(&l, |s| { assert_eq!(s, HEX, "the attestation is checked for the published digest"); Ok(()) }), Ok(()));
-        assert_eq!(RELEASES_URL, format!("https://api.github.com/repos/{REPO}/releases?per_page=20"));
+        assert!(
+            e.contains("no build attestation") && e.contains(REPO),
+            "{e}"
+        );
+        assert_eq!(
+            verify_origin(&l, |s| {
+                assert_eq!(
+                    s, HEX,
+                    "the attestation is checked for the published digest"
+                );
+                Ok(())
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            RELEASES_URL,
+            format!("https://api.github.com/repos/{REPO}/releases?per_page=20")
+        );
     }
 
     #[test]
@@ -348,12 +479,28 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         assert!(read_current(&dir).is_none());
         let asset = "TotK-Setup-x86_64.AppImage";
-        std::fs::write(dir.join(CURRENT_FILE), json!({"tag": "v0.5.0", "asset": asset}).to_string()).unwrap();
+        std::fs::write(
+            dir.join(CURRENT_FILE),
+            json!({"tag": "v0.5.0", "asset": asset}).to_string(),
+        )
+        .unwrap();
         assert!(read_current(&dir).is_none(), "no setup app yet");
-        let app = app_path(&dir, &Current { tag: "v0.5.0".into(), asset: asset.into() });
+        let app = app_path(
+            &dir,
+            &Current {
+                tag:   "v0.5.0".into(),
+                asset: asset.into(),
+            },
+        );
         std::fs::create_dir_all(app.parent().unwrap()).unwrap();
         std::fs::write(&app, b"x").unwrap();
-        assert_eq!(read_current(&dir), Some(Current { tag: "v0.5.0".into(), asset: asset.into() }));
+        assert_eq!(
+            read_current(&dir),
+            Some(Current {
+                tag:   "v0.5.0".into(),
+                asset: asset.into(),
+            })
+        );
         std::fs::write(dir.join(CURRENT_FILE), "not json").unwrap();
         assert!(read_current(&dir).is_none());
         let _ = std::fs::remove_dir_all(&dir);
@@ -383,17 +530,40 @@ mod tests {
         std::fs::write(dir.join(CURRENT_FILE), "{}").unwrap();
         std::fs::write(dir.join("TotK-Setup-x86_64.AppImage"), b"x").unwrap();
         // games the player installed into the launcher's folder: next to the setups, inside an old one, and a folder that is no release
-        for d in ["v0.4.1/TotK-Setup-windows/TotK", "TotK", "v0.3.0.old/game", "Zonith games/empty"] {
+        for d in [
+            "v0.4.1/TotK-Setup-windows/TotK",
+            "TotK",
+            "v0.3.0.old/game",
+            "Zonith games/empty",
+        ] {
             std::fs::create_dir_all(dir.join(d)).unwrap();
         }
         for d in ["v0.4.1/TotK-Setup-windows/TotK", "TotK", "v0.3.0.old/game"] {
             std::fs::write(dir.join(d).join(INSTALL_MARKER), b"{}").unwrap();
         }
         remove_old(&dir, "v0.5.1");
-        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
         left.sort();
-        assert_eq!(left, ["TotK", "TotK-Setup-x86_64.AppImage", "Zonith games", CURRENT_FILE, "v0.3.0.old", "v0.4.1", "v0.5.1"]);
-        assert!(dir.join("v0.4.1/TotK-Setup-windows/TotK").join(INSTALL_MARKER).is_file());
+        assert_eq!(
+            left,
+            [
+                "TotK",
+                "TotK-Setup-x86_64.AppImage",
+                "Zonith games",
+                CURRENT_FILE,
+                "v0.3.0.old",
+                "v0.4.1",
+                "v0.5.1"
+            ]
+        );
+        assert!(dir
+            .join("v0.4.1/TotK-Setup-windows/TotK")
+            .join(INSTALL_MARKER)
+            .is_file());
         assert!(holds_install(&dir.join("v0.4.1")) && !holds_install(&dir.join("v0.5.1")));
         let _ = std::fs::remove_dir_all(&dir);
     }

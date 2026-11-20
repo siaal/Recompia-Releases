@@ -32,8 +32,9 @@ mr=$(file game-build/scripts/make-release.ps1)
 rel=$(file launcher/src-tauri/src/releases.rs)
 upd=$(file launcher/src-tauri/src/update.rs)
 att=$(file launcher/src-tauri/src/attest.rs)
-zon=$(file launcher/src-tauri/src/zonith.rs)
-zcmd=$(file launcher/src-tauri/src/zonith_cmds.rs)
+# without whitespace, so rustfmt's line breaks do not matter
+zon=$(file launcher/src-tauri/src/zonith.rs | tr -d ' \t\r\n')
+zcmd=$(file launcher/src-tauri/src/zonith_cmds.rs | tr -d ' \t\r\n')
 file game-build/scripts/fetch-windows-tools.ps1 >/dev/null
 
 # no earlier release of this project as a base
@@ -64,11 +65,11 @@ grep -qF 'verify_origin(t, &want' <<<"$upd" || fail "update.rs no longer verifie
 grep -qF 'pub fn verify_release' <<<"$att" || fail "attest.rs no longer has verify_release"
 
 # Zonith, the launcher's second download: the same proof before its setup is fetched
-grep -qF 'pub fn verify_origin' <<<"$zon" || fail "zonith.rs no longer has verify_origin"
-grep -qF 'if !l.immutable' <<<"$zon" || fail "zonith.rs verify_origin no longer refuses a release that is not immutable"
-grep -qF 'zonith::verify_origin(l, |sum| crate::attest::verify_release(&agent, zonith::REPO' <<<"$zcmd" ||
+grep -qF 'pubfnverify_origin' <<<"$zon" || fail "zonith.rs no longer has verify_origin"
+grep -qF 'if!l.immutable' <<<"$zon" || fail "zonith.rs verify_origin no longer refuses a release that is not immutable"
+grep -qF 'zonith::verify_origin(l,|sum|crate::attest::verify_release(&agent,zonith::REPO' <<<"$zcmd" ||
     fail "zonith_cmds.rs no longer verifies the Zonith setup's attestation before downloading it"
-grep -qE 'RELEASES_URL: &str = concat!\("https://api.github.com/repos/", zonith_repo!\(\)' <<<"$zon" ||
+grep -qF 'RELEASES_URL:&str=concat!("https://api.github.com/repos/",zonith_repo!()' <<<"$zon" ||
     fail "zonith.rs RELEASES_URL is no longer the attested repository's (zonith_repo!)"
 
 echo "guards.ok $rev"
