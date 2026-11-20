@@ -10,13 +10,15 @@ down the left, with its own Home, page tabs along the top and Play button:
 
 - **Recompia** (Solo) and **Recompia: Co-op**: one install played two ways. Co-op hangs under Recompia on the rail and has a hero of its
   own, also featured as a card on Recompia's Home.
-- **Zonith**: the launcher fetches the newest release from GitHub (`Dittobyte/Zonith`, `src-tauri/src/zonith.rs`), checks it against
-  the SHA-256 GitHub lists for the file, keeps it under the launcher's local data folder and updates it when a newer one is out:
+- **Zonith**: the launcher fetches the newest release from GitHub (`Dittobyte/Zonith`, `zonith_repo!` in `src-tauri/src/zonith.rs`).
+  It installs only an immutable release whose build attestation shows that repository's `.github/workflows/release.yml` built the
+  file from the commit the tag names (`attest.rs`), then checks the download against the SHA-256 GitHub lists for it, keeps it under the launcher's local data folder and updates it when a newer one is out:
   Windows unpacks the zip to `zonith/<tag>/TotK-Setup-windows/`; Linux keeps the AppImage at `zonith/TotK-Setup-x86_64.AppImage`, one
   fixed path, because the rebuild command Zonith writes into an install starts that file. An older setup's folder is deleted only when
   no window of it is open. Play opens Zonith's own setup window with the folders it remembers filled in; it builds the game from the
   player's files and starts it. Its What's New lists Zonith's own releases. While the repository is private the release list answers
-  404 and the Home says "Coming soon". Not offered on macOS. A debug build reads the list from `PKP_ZONITH_RELEASES_URL` when set.
+  404 and the Home says "Coming soon". Not offered on macOS. A debug build reads the list from `PKP_ZONITH_RELEASES_URL` when set
+  (the attestation is still looked up in the real repository, so a stand-in release cannot be installed).
 
 Each game has its own picture and colours (`html[data-game]`, `theme.css`); the Colours button themes Recompia. Zonith's picture is
 `src/art/zonith-sky.svg`, rendered to webp by `python scripts/render-zonith-art.py`.

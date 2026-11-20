@@ -10,6 +10,7 @@
 # - release.yml fetches the Windows tools with fetch-windows-tools.ps1, and make-release.ps1 takes no base package
 # - release.yml creates releases as drafts and attests them with attest-build-provenance at the commit the launcher was checked with
 # - the launcher updates from the fork (releases.rs REPO) and verifies the attestation before installing (update.rs, attest.rs)
+# - Zonith's setup is downloaded only from an immutable release whose attestation verifies (zonith.rs, zonith_cmds.rs)
 set -euo pipefail
 
 rev=${1:?usage: check-guards.sh <commit> <fork owner/name>}
@@ -31,6 +32,8 @@ mr=$(file game-build/scripts/make-release.ps1)
 rel=$(file launcher/src-tauri/src/releases.rs)
 upd=$(file launcher/src-tauri/src/update.rs)
 att=$(file launcher/src-tauri/src/attest.rs)
+zon=$(file launcher/src-tauri/src/zonith.rs)
+zcmd=$(file launcher/src-tauri/src/zonith_cmds.rs)
 file game-build/scripts/fetch-windows-tools.ps1 >/dev/null
 
 # no earlier release of this project as a base
@@ -59,5 +62,13 @@ lower() { tr '[:upper:]' '[:lower:]' <<<"$1"; }
 [ "$(lower "$repo")" = "$(lower "$fork")" ] || fail "the launcher updates from '${repo:-?}' (releases.rs REPO), not the fork $fork"
 grep -qF 'verify_origin(t, &want' <<<"$upd" || fail "update.rs no longer verifies the release before downloading it"
 grep -qF 'pub fn verify_release' <<<"$att" || fail "attest.rs no longer has verify_release"
+
+# Zonith, the launcher's second download: the same proof before its setup is fetched
+grep -qF 'pub fn verify_origin' <<<"$zon" || fail "zonith.rs no longer has verify_origin"
+grep -qF 'if !l.immutable' <<<"$zon" || fail "zonith.rs verify_origin no longer refuses a release that is not immutable"
+grep -qF 'zonith::verify_origin(l, |sum| crate::attest::verify_release(&agent, zonith::REPO' <<<"$zcmd" ||
+    fail "zonith_cmds.rs no longer verifies the Zonith setup's attestation before downloading it"
+grep -qE 'RELEASES_URL: &str = concat!\("https://api.github.com/repos/", zonith_repo!\(\)' <<<"$zon" ||
+    fail "zonith.rs RELEASES_URL is no longer the attested repository's (zonith_repo!)"
 
 echo "guards.ok $rev"

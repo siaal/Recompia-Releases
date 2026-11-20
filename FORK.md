@@ -15,7 +15,9 @@ gameplay changes. It exists so that its releases can be trusted without trusting
   immutable (repository setting): their files and tag can never be replaced. A fix ships as a new version.
 - **A launcher that checks.** The launcher updates from this fork (`launcher/src-tauri/src/releases.rs`, `REPO`) and installs an
   update only when the release is immutable and its attestation verifies in the launcher itself (`attest.rs`): built by this
-  repository's release workflow on a GitHub-hosted runner, from the commit the release's tag names.
+  repository's release workflow on a GitHub-hosted runner, from the commit the release's tag names. Zonith, the launcher's second
+  game, is held to the same rule: its setup is downloaded only from an immutable release of the repository named by `zonith_repo!`
+  (`launcher/src-tauri/src/zonith.rs`) whose attestation shows that repository's `.github/workflows/release.yml` built it.
 
 `CHANGELOG.md` is upstream's, unchanged, so that merging it never conflicts; the fork's own changes are described here.
 
@@ -27,7 +29,7 @@ gameplay changes. It exists so that its releases can be trusted without trusting
 2. If upstream has published a stable release the fork has not, the fork releases **the same version** from upstream's release
    commit merged into the fork, with nothing newer from upstream.
 3. `tools/fork/check-guards.sh` checks the merge still keeps every point above (no base release, pinned tool downloads only,
-   drafts, the pinned attestation action, the launcher's repository and its check). A merge without conflicts can still undo one.
+   drafts, the pinned attestation action, the launcher's repository and its check, Zonith's check). A merge without conflicts can still undo one.
 4. The launcher and recompiler checks run on the merge (branch `upstream-sync`). Only when they pass is `main` pushed and the
    release tag pushed; the tag runs `release.yml`.
 

@@ -224,12 +224,14 @@ fn start_download(app: AppHandle) -> Result<(), String> {
 }
 
 fn run_job(app: &AppHandle, root: &Path, l: &Latest) -> Result<(), String> {
+    let agent = crate::download::agent(true);
+    zonith::verify_origin(l, |sum| crate::attest::verify_release(&agent, zonith::REPO, &l.tag, &l.asset, sum))?;
     let tag = zonith::safe_tag(&l.tag);
     let dir = root.join(&tag);
     std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make {}: {}", fwd(&dir), e))?;
     let pinned = crate::download::Pinned { file: &l.asset, url: &l.download_url, size: l.size, sha256: &l.sha256 };
     let mut last = Instant::now() - Duration::from_secs(1);
-    let fetched = crate::download::fetch(&crate::download::agent(true), &pinned, &dir, &S.cancel, &mut |n| {
+    let fetched = crate::download::fetch(&agent, &pinned, &dir, &S.cancel, &mut |n| {
         if last.elapsed() >= Duration::from_millis(250) || n == l.size {
             last = Instant::now();
             emit(app, ZonithProgress::download(n, l.size));
