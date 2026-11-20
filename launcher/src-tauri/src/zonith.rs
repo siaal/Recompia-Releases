@@ -6,8 +6,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// The one place Zonith's repository is named (a macro so RELEASES_URL can be built from it at compile time).
+macro_rules! zonith_repo {
+    () => {
+        "Dittobyte/Zonith"
+    };
+}
+
+/// The repository whose releases the launcher installs Zonith's setup from. Its releases must be immutable and attested by its own
+/// `.github/workflows/release.yml` (attest.rs `verify_release`), or the download is refused (`verify_origin`).
+pub const REPO: &str = zonith_repo!();
+
 /// Unauthenticated: until the repository is public this answers 404, which is "not public yet".
-pub const RELEASES_URL: &str = "https://api.github.com/repos/Dittobyte/Zonith/releases?per_page=20";
+pub const RELEASES_URL: &str = concat!("https://api.github.com/repos/", zonith_repo!(), "/releases?per_page=20");
 
 /// The setup file this platform downloads (by the end of its name).
 pub const ASSET_SUFFIX: &str = if cfg!(windows) { "-windows.zip" } else { ".AppImage" };
@@ -49,6 +60,9 @@ pub struct GhRelease {
     pub prerelease: bool,
     #[serde(default)]
     pub draft: bool,
+    /// GitHub's immutable release: its files and tag can no longer change (verify_origin installs no other)
+    #[serde(default)]
+    pub immutable: bool,
     #[serde(default)]
     pub assets: Vec<GhAsset>,
 }
@@ -84,6 +98,9 @@ pub struct Latest {
     pub download_url: String,
     #[serde(skip)]
     pub sha256: String,
+    /// the release is immutable on GitHub
+    #[serde(skip)]
+    pub immutable: bool,
 }
 
 pub fn parse_releases(body: &[u8]) -> Result<Vec<GhRelease>, String> {
@@ -126,9 +143,25 @@ pub fn latest(list: &[GhRelease], suffix: &str) -> Option<Latest> {
                 size: a.size,
                 download_url: a.browser_download_url.clone(),
                 sha256,
+                immutable: r.immutable,
             })
         })
         .max_by(|a, b| crate::releases::Version::parse(&a.tag).cmp(&crate::releases::Version::parse(&b.tag)))
+}
+
+/// The proof, before anything is downloaded, that `l`'s setup with checksum `l.sha256` is the release's own: the release is immutable,
+/// and `attested` (attest.rs `verify_release` for REPO) accepts the setup's build attestation. Err: the player's message.
+pub fn verify_origin(l: &Latest, attested: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+    if !l.immutable {
+        eprintln!("zonith.verify_origin.not_immutable tag={}", l.tag);
+        return Err(format!("Zonith {} is not locked (immutable) on GitHub, so its files could still be replaced. The launcher only installs locked releases. Nothing was changed.", l.tag));
+    }
+    if let Err(e) = attested(&l.sha256) {
+        eprintln!("zonith.verify_origin.not_attested tag={} asset={} reason={}", l.tag, l.asset, e);
+        return Err(format!("The Zonith setup {} could not be proven to be built by {}'s release workflow: {}. Nothing was changed.", l.tag, REPO, e));
+    }
+    eprintln!("zonith.verify_origin.ok tag={} asset={}", l.tag, l.asset);
+    Ok(())
 }
 
 /// The tag as a folder name.
@@ -274,6 +307,29 @@ mod tests {
         let r = rows(&l);
         assert_eq!(r.iter().map(|r| r.tag.as_str()).collect::<Vec<_>>(), ["v0.6.0-rc.1", "v0.5.1", "v0.5.0"]);
         assert!(r[0].prerelease && !r[1].prerelease);
+    }
+
+    #[test]
+    fn only_an_immutable_attested_release_is_installed() {
+        let locked = parse_releases(
+            json!([{"tag_name": "v0.5.0", "immutable": true, "assets": [{"name": "TotK-Setup-x86_64.AppImage", "size": 10, "browser_download_url": "https://x/a", "digest": format!("sha256:{HEX}")}]}])
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        let l = latest(&locked, ".AppImage").unwrap();
+        assert!(l.immutable);
+        assert!(!latest(&list(), ".AppImage").unwrap().immutable, "a release without the field is not immutable");
+
+        let asked = std::cell::Cell::new(false);
+        let open = Latest { immutable: false, ..l.clone() };
+        let e = verify_origin(&open, |_| { asked.set(true); Ok(()) }).unwrap_err();
+        assert!(e.contains("not locked") && e.contains("Nothing was changed"), "{e}");
+        assert!(!asked.get(), "a release that is not immutable is refused before its attestation is looked up");
+        let e = verify_origin(&l, |_| Err("no build attestation".into())).unwrap_err();
+        assert!(e.contains("no build attestation") && e.contains(REPO), "{e}");
+        assert_eq!(verify_origin(&l, |s| { assert_eq!(s, HEX, "the attestation is checked for the published digest"); Ok(()) }), Ok(()));
+        assert_eq!(RELEASES_URL, format!("https://api.github.com/repos/{REPO}/releases?per_page=20"));
     }
 
     #[test]
