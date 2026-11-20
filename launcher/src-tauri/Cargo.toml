@@ -20,6 +20,10 @@ sha2 = "0.10"
 base64 = "0.22"
 flate2 = "1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# attest.rs: the update's build attestation (ECDSA with ring, already in the tree for rustls; certificates; GitHub's snappy bundles)
+ring = "0.17"
+x509-cert = "0.2"
+snap = "1"
 pokopia-relay = { path = "../relay" }
 recompia-cloud-gateway = { path = "../cloud-gateway" }
 

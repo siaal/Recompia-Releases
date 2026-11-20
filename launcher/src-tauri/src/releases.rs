@@ -18,7 +18,8 @@ use std::time::Duration;
 
 use crate::release_names::Suffixes;
 
-const REPO: &str = "featureJosh/pokopia-recomp";
+/// The repository whose GitHub releases the launcher lists and updates from: the release fork, whose releases are immutable and attested (attest.rs).
+pub const REPO: &str = "siaal/Recompia-Releases";
 /// One page of the releases list (about 1 MB for a hundred releases): a whole-call limit, generous for a slow link.
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 /// Builds from a checkout carry these (0.0.0 = untagged build, 0.1.1 = the Cargo.toml default); a tagged release stamps its own.
@@ -88,6 +89,9 @@ pub struct GhRelease {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+    /// GitHub's immutable release: its files and tag can no longer change (update.rs installs no other)
+    #[serde(default)]
+    immutable: bool,
     #[serde(default)]
     assets: Vec<Asset>,
 }
@@ -452,7 +456,7 @@ pub fn target_for_tag(list: &[GhRelease], tag: &str, suffix: Suffixes) -> Option
     let r = list.iter().find(|r| r.tag_name == tag)?;
     Version::parse(&r.tag_name)?;
     let (a, s) = (asset_for(r, suffix)?, sums_of(r)?);
-    Some(Target { tag: r.tag_name.clone(), asset: a.name.clone(), asset_url: a.browser_download_url.clone(), size: a.size, sums_url: s.browser_download_url.clone() })
+    Some(Target { tag: r.tag_name.clone(), asset: a.name.clone(), asset_url: a.browser_download_url.clone(), size: a.size, sums_url: s.browser_download_url.clone(), immutable: r.immutable })
 }
 
 pub fn target_for_tag_here(list: &[GhRelease], tag: &str) -> Option<Target> {
@@ -471,6 +475,8 @@ pub struct Target {
     pub asset_url: String,
     pub size: u64,
     pub sums_url: String,
+    /// the release is immutable on GitHub
+    pub immutable: bool,
 }
 
 pub fn target_of(list: &[GhRelease], current: &str, suffix: Suffixes) -> Option<Target> {
@@ -480,6 +486,7 @@ pub fn target_of(list: &[GhRelease], current: &str, suffix: Suffixes) -> Option<
         asset_url: a.browser_download_url.clone(),
         size: a.size,
         sums_url: s.browser_download_url.clone(),
+        immutable: r.immutable,
     })
 }
 
@@ -501,6 +508,15 @@ mod channel_tests {
     fn list_of(items: &[(&str, bool)]) -> Vec<GhRelease> {
         let body = format!("[{}]", items.iter().map(|(t, p)| rel(t, *p)).collect::<Vec<_>>().join(","));
         parse_releases(body.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn a_target_knows_whether_its_release_is_immutable() {
+        let locked = rel("v0.9.0", false).replacen(r#""draft":false"#, r#""draft":false,"immutable":true"#, 1);
+        let list = parse_releases(format!("[{},{}]", locked, rel("v0.8.0", false)).as_bytes()).unwrap();
+        assert!(target_for_tag(&list, "v0.9.0", Suffixes::LINUX_X64).unwrap().immutable);
+        assert!(target_of(&list, "0.8.5", Suffixes::LINUX_X64).unwrap().immutable, "the update offered carries it too");
+        assert!(!target_for_tag(&list, "v0.8.0", Suffixes::LINUX_X64).unwrap().immutable, "a release without the field is not immutable");
     }
 
     #[test]

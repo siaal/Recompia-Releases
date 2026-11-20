@@ -2,8 +2,10 @@
 //! The in-launcher update of the release releases.rs picked.
 //!
 //! `install`: download, verify, extract, prepare, swap, all through `<install>/.update/`:
-//! 1. SHA256SUMS.txt first, so a release without a checksum for the package costs no 170 MB. The package is streamed to `.update/`
-//!    and hashed as it arrives. Nothing outside `.update/` has changed until step 4, so cancel and every failure before it only
+//! 1. SHA256SUMS.txt first, so a release without a checksum for the package costs no 170 MB. Then the proof that the package with that
+//!    checksum is the release's own (attest.rs): the release must be immutable on GitHub, and its build attestation must show the
+//!    repository's release workflow built it from the commit the tag names; anything less refuses the update. The package is
+//!    streamed to `.update/` and hashed as it arrives, and must match that checksum. Nothing outside `.update/` has changed until step 4, so cancel and every failure before it only
 //!    delete it.
 //! 2. The system tar unpacks it to `.update/staged/`, and the tree is checked: launcher and tools/build in `<prefix>-<v>/`, under
 //!    either release naming scheme (release_names.rs).
@@ -382,6 +384,7 @@ fn stages(t: &Target, p: &Paths, st: &UpdateState, work: &Path, report: &mut dyn
     let failed = |e: String| format!("The download failed: {}. Nothing was changed. Try again.", e);
     let sums = String::from_utf8_lossy(&get(&agent, &t.sums_url, 1 << 16).map_err(failed)?).into_owned();
     let want = sum_for(&sums, &t.asset).ok_or("This release has no checksum for its download yet. Try again in a while. Nothing was changed.")?;
+    verify_origin(t, &want, |sum| crate::attest::verify_release(&agent, crate::releases::REPO, &t.tag, &t.asset, sum))?;
 
     let archive = work.join(&t.asset);
     let resp = agent.get(&t.asset_url).call().map_err(|e| failed(e.to_string()))?;
@@ -405,6 +408,21 @@ fn stages(t: &Target, p: &Paths, st: &UpdateState, work: &Path, report: &mut dyn
     drop(send);
     let to = release_names::landing(&p.install, &p.launcher, name, Host::HERE);
     put_in_place(&package, name, &to, p, st, work, &mut tell, steps).map(|applied| (applied, to))
+}
+
+/// Step 1's proof that the package with checksum `want` is the release's own: the release is immutable, and `attested` (attest.rs
+/// `verify_release`) accepts the package's build attestation. Err: the player's message; nothing has been downloaded yet.
+fn verify_origin(t: &Target, want: &str, attested: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+    if !t.immutable {
+        eprintln!("update.verify_origin.not_immutable tag={}", t.tag);
+        return Err(format!("Release {} is not locked (immutable) on GitHub, so its files could still be replaced. The launcher only installs locked releases. Nothing was changed.", t.tag));
+    }
+    if let Err(e) = attested(want) {
+        eprintln!("update.verify_origin.not_attested tag={} asset={} reason={}", t.tag, t.asset, e);
+        return Err(format!("The download for {} could not be proven to be built by {}'s release workflow: {}. Nothing was changed.", t.tag, crate::releases::REPO, e));
+    }
+    eprintln!("update.verify_origin.ok tag={} asset={}", t.tag, t.asset);
+    Ok(())
 }
 
 /// Steps 3 and 4 of the header, from the unpacked package on: its launcher `name` goes to `to`. Plain paths: the tests run it on a fake
@@ -489,6 +507,22 @@ pub fn relaunch(path: &Path, dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn target(immutable: bool) -> Target {
+        Target { tag: "v1.0.0".into(), asset: "Recompia-1.0.0-win64.zip".into(), asset_url: String::new(), size: 1, sums_url: String::new(), immutable }
+    }
+
+    #[test]
+    fn only_an_immutable_attested_release_is_installed() {
+        let sum = "ab".repeat(32);
+        let asked = Cell::new(false);
+        let e = verify_origin(&target(false), &sum, |_| { asked.set(true); Ok(()) }).unwrap_err();
+        assert!(e.contains("not locked") && e.contains("Nothing was changed"), "{e}");
+        assert!(!asked.get(), "a release that is not immutable is refused before its attestation is looked up");
+        let e = verify_origin(&target(true), &sum, |_| Err("no build attestation".into())).unwrap_err();
+        assert!(e.contains("no build attestation") && e.contains("Nothing was changed"), "{e}");
+        assert_eq!(verify_origin(&target(true), &sum, |s| { assert_eq!(s, sum, "the attestation is checked for the published checksum"); Ok(()) }), Ok(()));
+    }
 
     #[test]
     fn the_runtime_library_follows_the_one_the_update_replaced() {

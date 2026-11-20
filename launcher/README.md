@@ -87,6 +87,13 @@ update continues from the cache. Installs never set up, development trees and re
 skip the step. Headless check of the whole first run:
 `cargo run --release --example first_run -- <game dir> <exefs> <romfs> <tools dir> [shader limit] [jobs]`.
 
+Before it downloads a package, the one-click update (and a build picked in the version list) checks that the package is the
+release's own (`src-tauri/src/attest.rs`): the GitHub release must be immutable, and the package's checksum must carry a build
+provenance attestation, verified in the launcher against Sigstore's keys, showing that the repository's
+`.github/workflows/release.yml` built it on a GitHub-hosted runner from the commit the release's tag names. Anything else
+refuses the update and changes nothing. A release can be checked by hand the same way:
+`gh attestation verify <archive> -R <repo> --signer-workflow <repo>/.github/workflows/release.yml`.
+
 ## Release folder
 
 The launcher looks for its tools in `tools\` next to its own exe. A release folder must contain:
