@@ -2,7 +2,9 @@
 # and publishes the version every other job reads; twelve build jobs then run at once — payload (the shader translator),
 # runtime (pkp_rt) and launcher (the Tauri app) for Windows, macOS, Linux x64 and Linux arm64 — each on its own runner with
 # only the toolchain it needs; four package jobs put a platform's three artifacts together; publish uploads every archive and
-# writes one SHA256SUMS.txt. The two Linux architectures are separate jobs on their own runners (ubuntu-22.04 and
+# writes one SHA256SUMS.txt and a build provenance attestation for every archive. Nothing in a package comes from an earlier
+# release: what is not built here is downloaded from its own project and checked against a pinned SHA-256 (the Windows tools in
+# fetch-windows-tools.ps1). The two Linux architectures are separate jobs on their own runners (ubuntu-22.04 and
 # ubuntu-22.04-arm): nothing is cross-compiled, so a native arm64 package is built by the same commands as the x64 one.
 # A tag v<x.y.z> does this; a manual run without release_tag only builds (artifacts).
 # Manual runs with release_tag = v<x.y.z> publish the same way and GitHub creates the tag on the commit that was built. No test
@@ -35,9 +37,6 @@ env:
   RYUBING_COMMIT: a82350bb774f70fcbd41c9987bf67a3775409963
   # MoltenVK, the Vulkan driver of the macOS package: the release archive the runtime links against and the package ships
   MOLTENVK_VERSION: v1.4.2
-  # package the third-party payload comes from (make-release.ps1): the upstream v0.1.1 repository is gone, so our own last release
-  BASE_REPO: Dittobyte/Recompia
-  BASE_RELEASE: v0.8.2
   # the release this run publishes: the pushed tag, or a manual run's release_tag; empty = build only
   REL_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
 
@@ -98,7 +97,7 @@ jobs:
           printf '%s\n' "$notes" > build-notes.md
           if [ "$PRERELEASE" = true ]; then
             # what was merged since the previous release; a failure here never blocks the release
-            if prev=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null) && [ -n "$prev" ]; then
+            if prev=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null) && [ -n "$prev" ]; then
               { git fetch --quiet --unshallow origin 2>/dev/null || true; git fetch --quiet origin "+refs/tags/$prev:refs/tags/$prev" 2>/dev/null || true; } || true
               changes=$(git log --merges --format='%H' "$prev..HEAD" 2>/dev/null | while read -r h; do
                 subject=$(git show -s --format='%s' "$h")
@@ -111,24 +110,28 @@ jobs:
                 mv build-notes.new build-notes.md
               fi
             fi
-            printf '\n\n### How to report\nOpen [a bug report](https://github.com/Dittobyte/Recompia/issues/new?template=bug_report.yml), choose **Testing** as the channel, say which version you have, and attach `pkp.log` (and `setup.log` if Set up ran). Thank you for testing.\n' >> build-notes.md
+            printf '\n\n### How to report\nOpen [a bug report](https://github.com/%s/issues/new?template=bug_report.yml), choose **Testing** as the channel, say which version you have, and attach `pkp.log` (and `setup.log` if Set up ran). Thank you for testing.\n' "$GITHUB_REPOSITORY" >> build-notes.md
           fi
           build=$(grep -m1 -E "^## ${VERSION//./\\.} \(build ([^)]+)\)" CHANGELOG.md | tr -d '\r' | sed -E 's/^## [^(]*\(build ([^)]+)\).*/\1/' || true)
           title="Recompia $VERSION"
           if [ -n "$build" ]; then title="$title (build $build)"; elif [ "$PRERELEASE" = true ]; then title="$title (Testing)"; fi
           args=()
           [ "$PRERELEASE" = true ] && args+=(--prerelease)
-          # A platform job that fails after this one leaves a release behind, so a re-run must not die here: update the release
-          # it finds. A manual re-run builds a newer commit, and the release's source archives come from the tag, so the tag
-          # moves with it (a pushed tag never moves: that run is the release).
-          if gh release view "$REL_TAG" >/dev/null 2>&1; then
-            echo "release $REL_TAG exists: updating its title and notes"
-            if [ "$GITHUB_REF_TYPE" != tag ]; then
-              gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$REL_TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          # The release stays a draft until publish has uploaded every archive, so it can be immutable (repository setting: its
+          # assets and tag locked once published). A published release is never touched again: a fix is a new version. A run
+          # that failed part way leaves the draft, and a re-run updates it; a manual re-run builds a newer commit, so the
+          # draft's pending tag is pointed at it (a draft's tag is only created when it is published).
+          if draft=$(gh release view "$REL_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then
+              echo "release.create.published: $REL_TAG"
+              echo "::error::release $REL_TAG is already published and is never replaced; publish a new version"; exit 1
             fi
+            echo "release.create.draft_exists: $REL_TAG, updating title, notes and target"
+            if [ "$GITHUB_REF_TYPE" != tag ]; then args+=(--target "$GITHUB_SHA"); fi
             gh release edit "$REL_TAG" --title "$title" --notes-file build-notes.md "${args[@]}"
           else
-            gh release create "$REL_TAG" --target "$GITHUB_SHA" --title "$title" --notes-file build-notes.md "${args[@]}"
+            echo "release.create.new: $REL_TAG (draft)"
+            gh release create "$REL_TAG" --draft --target "$GITHUB_SHA" --title "$title" --notes-file build-notes.md "${args[@]}"
           fi
 
   # The shader translator as a self-contained win-x64 publish: Set up runs it once per game folder to translate the shader
@@ -302,6 +305,7 @@ jobs:
             build/rtdll/pkp_rt.dll
             build/rtdll/pkp_rt.lib
             build/rtdll/libusb-1.0.dll
+            build/rtdll/astcdec-*-shared.dll
           compression-level: 6
 
   # The launcher: a Tauri app whose dependency tree is most of its build time.
@@ -371,8 +375,8 @@ jobs:
           path: launcher/src-tauri/target/release/pokopia-launcher.exe
           compression-level: 6
 
-  # The Windows zip: the three artifacts around the base package (make-release.ps1), which carries the unchanged third-party
-  # payload — Zig, embedded Python, the FSR/Streamline DLLs, astcdec, fonts, icons and licences.
+  # The Windows zip: the three artifacts, the checkout, and the unchanged third-party payload (Zig, embedded Python, the FSR and
+  # Streamline DLLs and their licences), which fetch-windows-tools.ps1 downloads from each project and checks against pinned SHA-256s.
   windows-package:
     needs: [windows-payload, windows-runtime, windows-launcher, licenses]
     runs-on: windows-2025
@@ -415,12 +419,28 @@ jobs:
           name: release-licenses
           path: build/licenses
 
+      # make-release.ps1 draws the keyboard and mouse prompt icons with tools/kbm_icons.py, which needs Pillow
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python packages
+        run: python -m pip install --upgrade pillow
+
+      # The pinned downloads (about 400 MB, Streamline's SDK most of it). The key is the script, which holds the pins; a restored
+      # file is hashed again by the script, so the cache can save time but never change what is shipped.
+      - name: Third-party downloads cache
+        uses: actions/cache@v4
+        with:
+          path: build/tools-dl
+          key: windows-tools-${{ hashFiles('game-build/scripts/fetch-windows-tools.ps1') }}
+
+      - name: Third-party payload
+        run: ./game-build/scripts/fetch-windows-tools.ps1 -Cache build/tools-dl -Out build/tools
+
       - name: Package
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download $env:BASE_RELEASE -R $env:BASE_REPO -p '*-win64.zip' -D build/base
-          ./game-build/scripts/make-release.ps1 -Version $env:VERSION -Base (Get-Item build/base/*.zip).FullName -RtDir build/rtdll `
+          ./game-build/scripts/make-release.ps1 -Version $env:VERSION -Tools build/tools -RtDir build/rtdll `
               -Launcher launcher/src-tauri/target/release/pokopia-launcher.exe -Harness build/harness -PokoHex build/pokohex -Crates build/licenses/THIRD_PARTY_CRATES.txt -Out build/rel
 
       - uses: actions/upload-artifact@v4
@@ -1322,13 +1342,19 @@ jobs:
           path: work/sources
           compression-level: 0
 
-  # The one place that writes into the release: it takes the archives the four package jobs produced, uploads them, and
-  # writes one SHA256SUMS.txt over all of them. A platform job that failed leaves its archive out instead of failing this one.
+  # The one place that writes into the release: it takes the archives the four package jobs produced, writes one SHA256SUMS.txt
+  # over all of them, attests their provenance, uploads them into the draft release, and publishes it once every package job has
+  # succeeded. A platform job that failed leaves its archive out and the release a draft instead of failing this one.
   publish:
     needs: [windows-package, linux-package, linux-arm64-package, macos-package, sources]
     if: always() && !cancelled() && (github.ref_type == 'tag' || inputs.release_tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # id-token and attestations: the provenance attestation (anyone can check an archive with `gh attestation verify <file> -R <repo>`)
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -1336,10 +1362,7 @@ jobs:
           path: build/assets
           merge-multiple: true
 
-      - name: Upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+      - name: Checksums
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -1350,4 +1373,42 @@ jobs:
           sha256sum -b "${archives[@]}" | sed -E 's#\./##' > SHA256SUMS.txt || true
           cat SHA256SUMS.txt
           test -s SHA256SUMS.txt || { echo "::error::no release archives were built"; exit 1; }
+
+      # Pinned to a commit: the launcher's updater verifies these bundles itself (launcher/src-tauri/src/attest.rs: a Rekor v1
+      # dsse entry with a signed entry timestamp), so the form must not change under it. Before moving the pin, check that a new
+      # bundle still verifies there.
+      - name: Provenance attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: build/assets/SHA256SUMS.txt
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd build/assets
+          archives=(./*.zip ./*.tar.gz ./*.tar.bz2)
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "${archives[@]}" SHA256SUMS.txt --clobber
+
+      # Publishing locks the release when immutable releases are on, so a release missing a platform stays a draft: re-run the
+      # failed jobs and this step publishes it with every archive.
+      - name: Publish
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+        run: |
+          echo "release.publish: $TAG"
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
+
+      - name: Left as a draft
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "release.publish.held: a package job did not succeed"
+          echo "$RESULTS"
+          echo "::warning::the release stays a draft: re-run the failed jobs to publish it"

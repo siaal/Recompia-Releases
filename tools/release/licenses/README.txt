@@ -17,7 +17,7 @@ Notices
                               written offer) and copyright/<package>.copyright
 
 Components of the runtime (pkp_rt, libpkp_rt) and the game layer
-  SDL3 (zlib), Dear ImGui (MIT), volk (MIT), VulkanMemoryAllocator (MIT), Vulkan-Headers (Apache-2.0 OR MIT), zstd (BSD-3-Clause),
+  SDL3 (zlib) and the hidapi inside it (BSD-3-Clause), Dear ImGui (MIT), volk (MIT), VulkanMemoryAllocator (MIT), Vulkan-Headers (Apache-2.0 OR MIT), zstd (BSD-3-Clause),
   miniz (MIT), Modtopia (MIT), SMAA (MIT), NVIDIA Image Scaling (MIT), AMD FidelityFX FSR 1 and FidelityFX API headers (MIT),
   NVIDIA Streamline headers (MIT), the NVN header (MIT), libvpx and its x86inc macros (BSD-3-Clause, ISC; Windows builds),
   astc-encoder (Apache-2.0), bc7enc_rdo (MIT or public domain, bc7e under Apache-2.0), ISPC (BSD-3-Clause), DejaVu fonts

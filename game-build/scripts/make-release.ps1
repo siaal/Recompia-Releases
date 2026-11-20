@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Packs the player zip (release model b: no game code or data in it; the player's PC lifts and links pkp.exe from their own dump).
 # Everything built from this repo is taken from the given build outputs and the checkout; the unchanged third-party payload (Zig, embedded
-# Python, FSR 3 / Streamline DLLs, astcdec, fonts, input icons, licence texts) comes from a base package (the previous release zip; release.yml BASE_REPO / BASE_RELEASE).
-# ponytail: base zip for the third-party payload; fetch each piece from its own source when one of them needs a new version.
-#   pwsh game-build\scripts\make-release.ps1 -Version 0.2.0 -Base PokopiaRecomp-0.1.1-win64.zip -RtDir game-build\build\rtdll `
+# Python, FSR 3 / Streamline DLLs and their licence texts) from -Tools, which fetch-windows-tools.ps1 stages from each project's own
+# download. Nothing comes from an earlier release.
+#   pwsh game-build\scripts\make-release.ps1 -Version 0.2.0 -Tools work\tools -RtDir game-build\build\rtdll `
 #        -Launcher launcher\src-tauri\target\release\pokopia-launcher.exe -Harness work\rel\harness -Crates work\licenses\THIRD_PARTY_CRATES.txt -Out work\rel
 param(
     [Parameter(Mandatory)][string]$Version,
-    [Parameter(Mandatory)][string]$Base,       # previous player zip (third-party payload)
-    [Parameter(Mandatory)][string]$RtDir,      # folder with pkp_rt.dll + pkp_rt.lib (game-build, PKP_RT_DLL=ON PKP_RELEASE=ON)
+    [Parameter(Mandatory)][string]$Tools,      # third-party payload folder (fetch-windows-tools.ps1 -Out)
+    [Parameter(Mandatory)][string]$RtDir,      # folder with pkp_rt.dll, pkp_rt.lib, libusb-1.0.dll, astcdec-*-shared.dll (game-build, PKP_RT_DLL=ON PKP_RELEASE=ON)
     [Parameter(Mandatory)][string]$Launcher,   # pokopia-launcher.exe (launcher, npm run tauri build)
     [Parameter(Mandatory)][string]$Harness,    # self-contained spirv_harness publish folder
     [Parameter(Mandatory)][string]$Crates,     # THIRD_PARTY_CRATES.txt (the release workflow's licenses job: cargo about, launcher/about.hbs)
@@ -24,10 +24,12 @@ $pkg = Join-Path $stage $name
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 
-# base payload, its top folder renamed
-[IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path $Base).Path, $stage)
-$top = Get-ChildItem $stage -Directory | Select-Object -First 1
-Rename-Item $top.FullName $name
+# third-party payload
+foreach ($f in 'tools\build\zig\zig.exe', 'tools\python\python.exe', 'upscalers\fsr3', 'upscalers\streamline', 'licenses') {
+    if (-not (Test-Path (Join-Path $Tools $f))) { throw "$Tools has no $f (run fetch-windows-tools.ps1)" }
+}
+New-Item -ItemType Directory -Force $pkg | Out-Null
+Copy-Item -Recurse -Force (Join-Path $Tools '*') $pkg
 
 function Put([string]$from, [string]$to) {
     $dst = Join-Path $pkg $to
@@ -55,6 +57,10 @@ Put (Join-Path $RtDir 'pkp_rt.lib') 'tools\build\sdk\pkp_rt.lib'
 # libusb 1.0.30, unchanged official build (runtime/cmake/gfx_deps.cmake copies it next to pkp_rt.dll): SDL loads it by name for
 # controllers it reaches over USB, so it sits next to pkp.exe, ahead of any other libusb-1.0.dll on PATH.
 Put (Join-Path $RtDir 'libusb-1.0.dll') 'libusb-1.0.dll'
+# the Windows ASTC decoders (tools/textures, astc-encoder), loaded by pkp_rt.dll from beside pkp.exe
+$astc = @(Get-ChildItem $RtDir -Filter 'astcdec-*-shared.dll')
+if ($astc.Count -ne 3) { throw "expected 3 astcdec-*-shared.dll in $RtDir, found $($astc.Count)" }
+$astc | ForEach-Object { Put $_.FullName $_.Name }
 Put "$root\runtime\third_party\libusb\COPYING" 'licenses\LICENSE.libusb.LGPL-2.1.txt'
 Put $Launcher 'PokopiaLauncher.exe'
 Mirror $Harness 'tools\spirv_harness' @('*.pdb')
@@ -70,7 +76,13 @@ Put "$root\game-build\res\pkp.rc" 'tools\build\sdk\pkp.rc'
 foreach ($f in 'pkp_build.py', 'dump_hashes.json', 'fetch_dlss.py') { Put "$root\game-build\release_b\$f" "tools\build\$f" }
 (Get-Content -Raw "$root\game-build\release_b\README.txt").Replace('@VERSION@', $Version) | Set-Content -NoNewline (Join-Path $pkg 'README.txt')
 Put "$root\game-build\release_b\BUNDLED_TOOLS.txt" 'licenses\BUNDLED_TOOLS.txt'
-# licence texts and notices (the base package's licenses/ keeps what only it carries: Zig, Python, FSR 3, Streamline)
+Put "$root\runtime\assets\fonts\DejaVuSans.ttf" 'fonts\DejaVuSans.ttf'
+# keyboard and mouse prompt icons (pkp_kbm.cpp reads assets\kbm_icons\ beside pkp.exe), generated as for the Linux and macOS packages
+$icons = Join-Path $Out 'kbm_icons'
+python "$root\tools\kbm_icons.py" --out $icons
+if ($LASTEXITCODE) { throw 'tools\kbm_icons.py failed (it needs Pillow)' }
+Mirror $icons 'assets\kbm_icons'
+# licence texts and notices (-Tools' licenses\ carries those of Zig, Python, FSR 3 and Streamline)
 foreach ($d in 'tools\release\licenses', 'tools\shaders\licenses') {
     Get-ChildItem "$root\$d" -File | ForEach-Object { Put $_.FullName "licenses\$($_.Name)" }
 }
