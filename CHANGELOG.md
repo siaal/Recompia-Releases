@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.15.3
 
 ### Gameplay
 - Storage box tabs, off by default (switch them on in the launcher's Settings > Gameplay or in the new Inventory tab of the game's Settings screen, which now also holds the sort settings): standard storage boxes get up to 12 pages of 20 slots (4 by default), and big storage boxes get up to 6 tabs of 60 slots (360 slots total, 4 tabs by default). L and R switch pages and move between big box tabs at their page boundaries; the box shows the game's own page dots and L / R icons for all its pages, and an item you hold comes along to the next page (it needs one free bag slot on the way). Each standard page uses one of the island's 271 standard box spots and each big tab uses one of its 256 big box spots. About the first 22 standard boxes and 42 big boxes placed get every extra, with fewer or none for later boxes. Extra storage is off during Link Play. Items stay saved. Use **Set up again** once after updating to relink the game. Your shaders are kept.
+
+### Packaging
+- The Windows package is built entirely from this repository and from each bundled tool's own download (Zig, Python, FSR 3, Streamline), checked against pinned checksums; nothing is carried over from an earlier release. The keyboard and mouse prompt icons on Windows are now the same set the Linux and macOS packages ship.
+- Every release archive has a build provenance attestation (`gh attestation verify <archive> -R <repository>`).
+- A release is published only once every platform's archive is attached, and a published release is never replaced: a fix ships as a new version.
+- The launcher's **Update** (and installing a build from the version list) now installs only an immutable release whose download carries a valid build attestation from the release workflow, built from the commit its tag names. Otherwise it stops before downloading and changes nothing.
 
 ## 0.15.2 (build S: Sloth Hotfix a2)
 

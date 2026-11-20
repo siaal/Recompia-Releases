@@ -1,3 +1,15 @@
+> **About this fork.** This is a release fork of [Dittobyte/Recompia](https://github.com/Dittobyte/Recompia). It follows upstream's
+> code and adds no gameplay changes. It exists so that its [releases](../../releases) can be trusted without trusting anyone's machine:
+>
+> - Every package is built from scratch by GitHub Actions from this repository. Third-party tools (Zig, Python, FSR 3, Streamline)
+>   are downloaded from their own projects and checked against pinned SHA-256 checksums. Nothing is carried over from an earlier release.
+> - Every archive has a build provenance attestation. Check one with
+>   `gh attestation verify <archive> -R <this repository> --signer-workflow <this repository>/.github/workflows/release.yml`.
+> - Releases are immutable: once published, their files and tag can never be replaced.
+> - The launcher updates from this fork's releases only, and installs an update only after verifying its attestation itself.
+>
+> The rest of this README is upstream's. Links below point to upstream; report game bugs there.
+
 <h1 align="center">
   <img src="docs/assets/logo.png" alt="Recompia" width="420">
 </h1>
