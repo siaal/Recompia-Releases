@@ -1,0 +1,158 @@
+# The release fork's daily upstream sync (FORK.md). tools/fork/sync-upstream.sh merges upstream's main into main and, when upstream
+# has published a stable release the fork has not, picks the commit to release the same version from (upstream's release commit
+# with the fork's changes). The merge goes to the branch upstream-sync and runs the launcher and recompiler checks there; only when
+# they pass is it pushed to main, and the release tag pushed, which runs release.yml. A conflict, a broken guard
+# (tools/fork/check-guards.sh) or a failed check pushes nothing to main and opens (or comments on) an issue.
+#
+# Needs the secret SYNC_TOKEN: a fine-grained personal access token for this repository only, with Contents and Workflows read
+# and write. The workflow's own token can neither push commits that change .github/workflows/ nor start another workflow with
+# its pushes (the release tag must start release.yml).
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: Dittobyte/Recompia
+  GIT_AUTHOR_NAME: github-actions[bot]
+  GIT_AUTHOR_EMAIL: 41898283+github-actions[bot]@users.noreply.github.com
+  GIT_COMMITTER_NAME: github-actions[bot]
+  GIT_COMMITTER_EMAIL: 41898283+github-actions[bot]@users.noreply.github.com
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      head: ${{ steps.sync.outputs.head }}
+      changed: ${{ steps.sync.outputs.changed }}
+      release_tag: ${{ steps.sync.outputs.release_tag }}
+      release_sha: ${{ steps.sync.outputs.release_sha }}
+    steps:
+      - name: Token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::the secret SYNC_TOKEN is not set (FORK.md, Setup)" | tee sync-report.md
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Merge upstream
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          tools/fork/sync-upstream.sh "$GITHUB_REPOSITORY"
+
+      - name: Stage for the checks
+        if: steps.sync.outputs.changed == 'true'
+        run: git push --force origin "${{ steps.sync.outputs.head }}:refs/heads/upstream-sync"
+
+      - name: Report
+        if: always()
+        run: |
+          [ -f sync-report.md ] || echo "The sync stopped before it could report; see the run's log." > sync-report.md
+          cat sync-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-report
+          path: sync-report.md
+
+  launcher:
+    needs: merge
+    if: needs.merge.outputs.changed == 'true'
+    uses: ./.github/workflows/launcher-checks.yml
+    with:
+      ref: ${{ needs.merge.outputs.head }}
+
+  recomp:
+    needs: merge
+    if: needs.merge.outputs.changed == 'true'
+    uses: ./.github/workflows/recomp-checks.yml
+    with:
+      ref: ${{ needs.merge.outputs.head }}
+
+  land:
+    needs: [merge, launcher, recomp]
+    # the checks are skipped when main is unchanged (a release of a commit an earlier sync merged); any other result stops here
+    if: >-
+      always() && needs.merge.result == 'success'
+      && (needs.merge.outputs.changed == 'true' || needs.merge.outputs.release_tag != '')
+      && contains(fromJSON('["success","skipped"]'), needs.launcher.result)
+      && contains(fromJSON('["success","skipped"]'), needs.recomp.result)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Push main
+        if: needs.merge.outputs.changed == 'true'
+        run: |
+          git fetch origin upstream-sync
+          # not forced: if main moved since the merge, this fails and the next sync merges again
+          git push origin "${{ needs.merge.outputs.head }}:refs/heads/main"
+          echo "Pushed main: ${{ needs.merge.outputs.head }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release
+        if: needs.merge.outputs.release_tag != ''
+        env:
+          TAG: ${{ needs.merge.outputs.release_tag }}
+          SHA: ${{ needs.merge.outputs.release_sha }}
+        run: |
+          git push origin "$SHA:refs/tags/$TAG"
+          echo "Tagged $TAG at $SHA: release.yml builds and publishes it." >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    needs: [merge, launcher, recomp, land]
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: sync-report
+
+      - name: Issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CHECKS: launcher ${{ needs.launcher.result }}, recompiler ${{ needs.recomp.result }}, push ${{ needs.land.result }}
+        run: |
+          {
+            cat sync-report.md 2>/dev/null || true
+            printf '\nChecks: %s. Main was not changed unless the push step succeeded.\n\nRun: %s\n' "$CHECKS" "$RUN"
+          } > body.md
+          title="Upstream sync needs a hand"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty' || true)
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body-file body.md
+          elif ! gh issue create --title "$title" --body-file body.md; then
+            echo "::warning::could not open an issue (are Issues enabled?); GitHub emails the failed run instead"
+          fi

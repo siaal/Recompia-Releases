@@ -17,6 +17,12 @@ on:
       - 'launcher/**'
       - 'runtime/docs/*_schema.json'
       - '.github/workflows/launcher-checks.yml'
+  # the release fork's upstream sync checks a merge before pushing it (sync-upstream.yml)
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -27,6 +33,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Packages
         run: |

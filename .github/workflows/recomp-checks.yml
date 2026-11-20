@@ -16,6 +16,12 @@ on:
       - 'recomp/**'
       - 'game-build/release_b/**'
       - '.github/workflows/recomp-checks.yml'
+  # the release fork's upstream sync checks a merge before pushing it (sync-upstream.yml)
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -26,6 +32,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-python@v5
         with:

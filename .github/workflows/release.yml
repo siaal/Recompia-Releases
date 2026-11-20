@@ -112,6 +112,8 @@ jobs:
             fi
             printf '\n\n### How to report\nOpen [a bug report](https://github.com/%s/issues/new?template=bug_report.yml), choose **Testing** as the channel, say which version you have, and attach `pkp.log` (and `setup.log` if Set up ran). Thank you for testing.\n' "$GITHUB_REPOSITORY" >> build-notes.md
           fi
+          # the release fork (FORK.md): what this build is and how to check a download
+          printf '\n\n### About this build\nBuilt from source by [%s](https://github.com/%s) ([FORK.md](https://github.com/%s/blob/main/FORK.md)): no earlier release is reused, and every archive is attested. Check one with `gh attestation verify <archive> -R %s --signer-workflow %s/.github/workflows/release.yml`.\n' "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" >> build-notes.md
           build=$(grep -m1 -E "^## ${VERSION//./\\.} \(build ([^)]+)\)" CHANGELOG.md | tr -d '\r' | sed -E 's/^## [^(]*\(build ([^)]+)\).*/\1/' || true)
           title="Recompia $VERSION"
           if [ -n "$build" ]; then title="$title (build $build)"; elif [ "$PRERELEASE" = true ]; then title="$title (Testing)"; fi

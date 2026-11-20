@@ -7,6 +7,7 @@
 >   `gh attestation verify <archive> -R <this repository> --signer-workflow <this repository>/.github/workflows/release.yml`.
 > - Releases are immutable: once published, their files and tag can never be replaced.
 > - The launcher updates from this fork's releases only, and installs an update only after verifying its attestation itself.
+> - Upstream is merged every day, and each upstream release is released here under the same version. See [FORK.md](FORK.md).
 >
 > The rest of this README is upstream's. Links below point to upstream; report game bugs there.
 
