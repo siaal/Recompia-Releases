@@ -3,11 +3,12 @@
 //
 // Every site the co-op phases need is registered here, in coop mode only, so the game libraries are lifted once with all of them
 // (recomp/games/pkp/main.sites). Each hook hands its site to the part of co-op that owns it (pkp_coop_internal.h); the comment of each
-// site says what that part does there. The session and save sites pass through until their parts land (returns 0: the game's own code
+// site says what that part does there. The sites marked "reserved" have no part yet and pass through (returns 0: the game's own code
 // runs). The sites are checked once main is loaded (pkp_site_check.h): one that is
 // not the expected instruction, or a midhook site the lifted libraries lack, removes every co-op hook.
 #include "core/pkp_coop.h"
 #include "core/pkp_coop_internal.h"
+#include "core/pkp_strings.h"
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -16,9 +17,11 @@
 #include <atomic>
 #include <cctype>
 #include <cstddef>
+#include <optional>
 
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
+#include "nxrt/notices.h"
 
 namespace nxrt::games::pkp {
 
@@ -26,6 +29,8 @@ namespace {
 
 constexpr const char* kTag = "pkp";
 constexpr size_t kMemberDigits = 32;
+constexpr const char* kOffNotice = "pkp.coop";   // the notice of co-op turning itself off at the site check
+constexpr double kOffNoticeSeconds = 12.0;       // long enough to read; shown at start-up and again at the first gameplay frame
 
 
 // What the game does at a site; the hook's user value.
@@ -66,18 +71,27 @@ enum class Site : uintptr_t {
     GeneralGoal,      // a general request's completion, right before its town goal +1: a replay of another player's hand-in skips
                       // it, so each hand-in counts once; the talker's own hand-in shares its reward with the group
     // ---- the session ----
-    PastTitle,        // the title screen's continue: the co-op save loads without the title, and its unclean-exit mark is cleared
-    SimStep,          // the simulation step: skipped while the session waits for a dropped member (the network tick keeps running)
-    TripFile,         // a trip is filed (five filers): every door out of the session is shut, except the stage moves the group makes
-                      // together
-    DropCheck,        // the drop check: a drop files no trip home; the session pauses and waits for the member instead
+    PastTitle,        // the title's result getter: while the title waits for a press, the co-op save continues with no press, and its
+                      // "did not disconnect correctly" mark is cleared (pkp_coop_title.cpp)
+    SimStep,          // the simulation step 0x231890: skipped while the group waits for a dropped member and nothing is in flight
+                      // (pkp_coop_drop.cpp); the network and the menus run on
+    TripFile,         // the trip filers (0xbd45c, 0xbdc68, 0xbdd28, the kick 0x5483a0, the host's StageMove 0xbe5f0): Save and Quit
+                      // and the group's moves run (a member's leave and the host's close are announced first); the kick's "go
+                      // home" filing is refused in a session (pkp_coop_drop.cpp)
+    DropCheck,        // the drop check 0xbca8c: not handled, the game's own code runs (a process whose session ended is sent home,
+                      // and pkp_coop_session.cpp joins again; pkp_coop_drop.cpp keeps that trip). It is entered every frame the trip
+                      // record is idle (0xbaf54's tail call) and decides inside
     AreaMove,         // the area move by destination index: in a session it waits for the group's poll (pkp_coop_travel.cpp)
-    StateReset,       // the state reset after a drop: does not run
-    Error3103,        // error 3103 (the session was lost): held back while the session waits for a reconnect
-    LinkMenu,         // the PC's Link Play menu: shut, the co-op session is the launcher's
-    MemberScreen,     // the member screen: shut likewise
+    GateEntry,        // an area gate's entry (its passage): in a session it waits for the group's poll, before anything fades
+    Error3103,        // the online error display 0x547278: error 3103 (the session was lost) is held back in a co-op session and its
+                      // rejoin window says it instead (pkp_coop_drop.cpp)
+    LinkMenu,         // the PC's Link Play screen's state entry: in a session, a state that makes a session call is refused, the
+                      // co-op session is the launcher's (pkp_coop_doors.cpp)
+    PauseMenu,        // the pause menu's state entry: in a session, the host's "send this member home" and a member's rejection are
+                      // refused; Save and Quit (the host closes the session, a teammate leaves it) stays (pkp_coop_doors.cpp)
     // ---- the save ----
-    SaveWrite,        // a member's own save write (three writers): held, the authority writes the co-op save
+    SaveWrite,        // a save write (0x241324, 0x245200, 0x5a8a34): reserved for holding a member's own writes once the authority
+                      // writes the shared co-op save; not handled yet, the game's own code runs (every member saves its own copy)
     // ---- the bags: each member's is a record of ours (pkp_coop_bags.cpp); the game's writers that fight it are off (pkp_coop_bag.cpp) ----
     JoinBagSend,      // the host's side of a join's bag sync: it sends "no stored bag", so a member keeps its own bag instead of the
                       // host's stale copy
@@ -134,6 +148,48 @@ enum class Site : uintptr_t {
     // ---- the creature events (pkp_coop_feed.cpp) ----
     TalkedTo,         // the contents scheduler's "talked to" notice, which skips a visitor: a member's talk is posted on the
                       // authority, so content records waiting on that talk run for the group
+    Fed,              // the "fed" notice of a field feed (held-item command kind 9), which skips a visitor: a member's feed is made
+                      // on the authority too, so the group's creature eats it
+    // ---- a member's talk gift (pkp_coop_friendship.cpp) ----
+    FriendGift,       // the host's apply of a member's talk gift: its friendship is made on the authority outside Cloud Island too
+    // ---- gimmick ownership (pkp_coop_owner.cpp) ----
+    UseRefused,       // a gimmick press a story content took instead of the use: the object is given back, as when the class's
+                      // event does not start
+    // ---- a newly met creature moving in (pkp_coop_newcomer.cpp) ----
+    Befriend,         // the talk end step's befriend call: a member's first talk with a new creature is made on the authority
+    // ---- a shared object a member was using when it left (pkp_coop_gimmicks.cpp) ----
+    SharedLeave,      // a multi-user object's own "member left" step (MemberDelete): the character the leaver had at it is let go too
+    // ---- a member's later talks with a resident (pkp_coop_talk.cpp) ----
+    TalkOwn,          // the talk handler's "this player is the creature's own" test: a member is, for a creature living in the
+                      // town, so its talks go on to the host's later stages instead of the stranger's talk
+    // ---- gimmick ownership, a grant that starts no use (pkp_coop_owner.cpp) ----
+    GrantNoUse,       // a member's ownership grant after which no use runs (its data apply vt+0x2f8 failed, or the class runs none
+                      // from a grant): the object is given back
+    // ---- gimmick ownership, the host's own use of the story's materials drop ends (pkp_coop_owner.cpp) ----
+    HostUseEnd,       // class 0x326dc98's close: the host's own use is given back, which nothing in the class does
+    // ---- the talk conditions inside a member's talk (pkp_coop_talk.cpp) ----
+    TalkCondParent,   // talk condition 0x52's role test: a member answers as the host, from the group's record of the creature
+    TalkCondVisitor,  // talk condition 0x25 (IsVisitor): false for a member, so it gets no visitor-only talk the host would not
+    // ---- a gimmick's release on a member's busy request queue, the ownership log (pkp_coop_linkqueue.cpp, pkp_coop_owner.cpp) ----
+    ReleaseGate,      // a close's "every request answered" test before its release record: let through, the record is kept instead
+    RequestSend,      // the generic request send: a release record the busy queue would refuse is kept and sent once it is idle
+    OwnerApply,       // the ownership apply (take / release): logged; a member's new take drops a kept release of the same object
+    OwnerPress,       // the player's press on an object: remembered for the busy line's log
+    OwnerNotice,      // the message log's post: "Someone else is using this right now." logged with the object
+    OwnerRefused,     // a member's grant reply: a take the host turned down is logged
+    // ---- a member's take-out of its Ordered Items and Gifts (pkp_coop_takeout.cpp) ----
+    TakeoutStore,     // the shared move's choice of the store a taken item is removed from: the take-out screen's removal of a
+                      // member's ordered item or gift uses the own store it listed, not the visitor's temp list
+    // ---- a member's deposit into the story's materials drop (pkp_coop_deposit.cpp) ----
+    DepositStore,     // the container slice: a member's drop slice is its own store, so its screen, check and our clear share one
+    DepositConfirm,   // the drop's close after the screen's confirm: a member's deposit is stepped on the authority, not here
+    // ---- a story follow on a member (pkp_coop_follow.cpp) ----
+    StoryFollow,      // a story content's "follow this player" attach (0x2a1ed4, local only): on a member it does not run and the
+                      // authority makes it for its own copy of the creature, so no member takes the host's follow away
+    // ---- a creature's talk record flag a member's talk arms (pkp_coop_talkrec.cpp) ----
+    TalkRecArmed,     // script callback 195's set of the talk record's +0x10: a member's is set in the authority's record too
+    // ---- the Star Piece swap in a member's talk (pkp_coop_talk.cpp) ----
+    TalkSwapParent,   // script callback slot 119's parent term: a member's is the group's record of the creature, as for the host
 };
 
 struct CoopSite {
@@ -170,10 +226,10 @@ constexpr CoopSite kSites[] = {
     {{0xbe5f0, kPacibsp, true}, Site::TripFile},
     {{0xbca8c, kPacibsp, true}, Site::DropCheck},
     {{0xbda20, kPacibsp, true}, Site::AreaMove},
-    {{0xb0d74, kPacibsp, true}, Site::StateReset},
+    {{0x7b0d80, kPacibsp, true}, Site::GateEntry},
     {{0x547278, kPacibsp, true}, Site::Error3103},
     {{0xf282a8, kPacibsp, true}, Site::LinkMenu},
-    {{0xfb9ea0, kPacibsp, true}, Site::MemberScreen},
+    {{0xfb9ea0, kPacibsp, true}, Site::PauseMenu},
     {{0x241324, kPacibsp, true}, Site::SaveWrite},
     {{0x245200, kPacibsp, true}, Site::SaveWrite},
     {{0x5a8a34, kPacibsp, true}, Site::SaveWrite},
@@ -222,6 +278,60 @@ constexpr CoopSite kSites[] = {
     {{0x643938, 0x37001220u, false}, Site::BuyCount},        // tbnz w0, #0, 0x643b7c (w0 = the visitor test 0x376c4)
     // the creature events (pkp_coop_feed.cpp)
     {{0x1355ec, kPacibsp, true}, Site::TalkedTo},
+    {{0x136548, kPacibsp, true}, Site::Fed},
+    // a member's talk gift (pkp_coop_friendship.cpp)
+    {{0x21c46c, 0x12000003u, false}, Site::FriendGift},      // and w3, w0, #0x1 (w0 = Cloud Island, 0x46e308's w3 at 0x21c484)
+    // gimmick ownership (pkp_coop_owner.cpp): the `tbz w0, #0` after a use posts its press to the contents, five classes
+    {{0x7c141c, 0x3607dec0u, false}, Site::UseRefused},      // tbz w0, #0, 0x7c0ff4 (class 0x32688e0)
+    {{0x79d558, 0x36000120u, false}, Site::UseRefused},      // tbz w0, #0, 0x79d57c (class 0x3265b20)
+    {{0x848eac, 0x3607ed40u, false}, Site::UseRefused},      // tbz w0, #0, 0x848c54 (class 0x327a3b8)
+    {{0x79b178, 0x3607ec40u, false}, Site::UseRefused},      // tbz w0, #0, 0x79af00 (class 0x3265668)
+    {{0x7e78f4, 0x36000da0u, false}, Site::UseRefused},      // tbz w0, #0, 0x7e7aa8 (class 0x326dc98)
+    // a newly met creature moving in (pkp_coop_newcomer.cpp)
+    {{0x48235c, 0x97fcdcc6u, false}, Site::Befriend},        // bl 0x3b9674 (x0 = the creature's component, x1 = &own user id)
+    // gimmick ownership, more classes (pkp_coop_owner.cpp): the same `tbz w0, #0` after the press went to the contents
+    {{0x7b9b0c, 0x36000320u, false}, Site::UseRefused},      // tbz w0, #0, 0x7b9b70 (class 0x3268000, its use)
+    {{0x7b80d0, 0x36003d40u, false}, Site::UseRefused},      // tbz w0, #0, 0x7b8878 (class 0x3268000, the host's deferred use)
+    {{0x82b8e4, 0x36000a80u, false}, Site::UseRefused},      // tbz w0, #0, 0x82ba34 (class 0x32762f8)
+    {{0x7e469c, 0x3607e5c0u, false}, Site::UseRefused},      // tbz w0, #0, 0x7e4354 (class 0x326d7e0)
+    {{0x808d68, 0x360003a0u, false}, Site::UseRefused},      // tbz w0, #0, 0x808ddc (class 0x3271340)
+    {{0x83d0b0, 0x36000580u, false}, Site::UseRefused},      // tbz w0, #0, 0x83d160 (class 0x3278b08)
+    {{0x85eae0, 0x36000b20u, false}, Site::UseRefused},      // tbz w0, #0, 0x85ec44 (classes 0x327cf68 / 0x327d8d8 / 0x327e248)
+    // a shared object a member was using when it left (pkp_coop_gimmicks.cpp): vt+0x228 of the two multi-user classes
+    {{0x74cc60, kPacibsp, true}, Site::SharedLeave},         // class 0x3262c80 (category 2)
+    {{0x7568f0, kPacibsp, true}, Site::SharedLeave},         // class 0x3263160 (category 0x13)
+    // a member's later talks with a resident (pkp_coop_talk.cpp)
+    {{0x4c0574, 0x36000140u, false}, Site::TalkOwn},         // tbz w0, #0, 0x4c059c (w0 = 0x332c80's answer)
+    // gimmick ownership, a grant that starts no use (pkp_coop_owner.cpp)
+    {{0x539b44, 0x36000120u, false}, Site::GrantNoUse},      // tbz w0, #0, 0x539b68 (w0 = vt+0x2f8's answer, x23 the gimmick)
+    // gimmick ownership, the host's own use of the story's materials drop ends (pkp_coop_owner.cpp)
+    {{0x7e67c0, kPacibsp, true}, Site::HostUseEnd},          // class 0x326dc98's close (x0 = the gimmick)
+    // the talk conditions inside a member's talk (pkp_coop_talk.cpp)
+    {{0x4d35f8, 0x52000008u, false}, Site::TalkCondParent},  // eor w8, w0, #1 (w0 = IsHost's answer, in condition 0x52)
+    {{0x4d0620, 0x17ed9c29u, true}, Site::TalkCondVisitor},  // b 0x376c4 (condition 0x25, all of it)
+    // a gimmick's release on a member's busy request queue, the ownership log (pkp_coop_linkqueue.cpp, pkp_coop_owner.cpp)
+    {{0x7b8b68, 0x36000980u, false}, Site::ReleaseGate},     // tbz w0, #0, 0x7b8c98 (class 0x3268000's close 0x7b8960)
+    {{0x82a558, 0x36000920u, false}, Site::ReleaseGate},     // tbz w0, #0, 0x82a67c (class 0x32762f8's close 0x82a460)
+    {{0x7e20b0, 0x36000180u, false}, Site::ReleaseGate},     // tbz w0, #0, 0x7e20e0 (0x7e2030, class 0x326d7e0)
+    {{0x83bec0, 0x36000120u, false}, Site::ReleaseGate},     // tbz w0, #0, 0x83bee4 (0x83bc40, class 0x3278b08)
+    {{0x83c288, 0x36000180u, false}, Site::ReleaseGate},     // tbz w0, #0, 0x83c2b8 (0x83c228, class 0x3278b08)
+    {{0x83e310, 0x36000160u, false}, Site::ReleaseGate},     // tbz w0, #0, 0x83e33c (0x83e1c0)
+    {{0x214974, kPacibsp, true}, Site::RequestSend},
+    {{0x538f60, 0x79400008u, true}, Site::OwnerApply},       // ldrh w8, [x0]
+    {{0x313eb4, 0xd63f0100u, false}, Site::OwnerPress},      // blr x8 (x0 = the object, x8 its slot 5 handler)
+    {{0xa8fba0, kPacibsp, true}, Site::OwnerNotice},
+    {{0x539620, kPacibsp, true}, Site::OwnerRefused},
+    // a member's take-out of its Ordered Items and Gifts (pkp_coop_takeout.cpp)
+    {{0x2eea74, 0x12000003u, false}, Site::TakeoutStore},    // and w3, w0, #0x1 (w0 = IsVisitor's answer, w21 = the container kind)
+    // a member's deposit into the story's materials drop (pkp_coop_deposit.cpp)
+    {{0x5b1c84, kPacibsp, true}, Site::DepositStore},
+    {{0x7e693c, 0x36001ac0u, false}, Site::DepositConfirm},  // tbz w0, #0, 0x7e6c94 (w0 = 0xa94bbc's confirm flag, x19 the gimmick)
+    // a story follow on a member (pkp_coop_follow.cpp)
+    {{0x2a1ed4, 0xf0018f09u, true}, Site::StoryFollow},      // adrp x9, 0x3484000 (x0 = &the creature's actor id, w1 the flag)
+    // a creature's talk record flag a member's talk arms (pkp_coop_talkrec.cpp)
+    {{0x4ae7e8, 0x940b4132u, false}, Site::TalkRecArmed},    // bl 0x77ecb0 (after strb w9, [x8, #0x10] off Cloud Island; w23 = chara)
+    // the Star Piece swap in a member's talk (pkp_coop_talk.cpp)
+    {{0x4a1adc, 0x2a0802d8u, false}, Site::TalkSwapParent},  // orr w24, w22, w8 (w8 = the parent term, w24 = the data id, in 0x4a17fc)
 };
 constexpr size_t kSiteCount = sizeof kSites / sizeof kSites[0];
 
@@ -234,6 +344,7 @@ struct State {
     std::atomic<bool> armed{false};
     std::atomic<bool> checked{false};
     std::atomic<bool> in_game{false};   // play mode's, from its frame (main thread) for the game-frame tick
+    std::optional<strings::Str> off_text;   // the site check turned co-op off: the notice's text, posted again once gameplay starts (frame only); its language is read at each post
 };
 State& st() {
     static State s;
@@ -266,6 +377,7 @@ int hook(::Ctx* c, uint64_t addr, void* user) {
         case Site::Friendship: return coop::outcomes::on_friendship(c);
         case Site::GeneralGoal: return coop::requests::on_general_goal(c);
         case Site::AreaMove: return coop::travel::on_area_move(c);
+        case Site::GateEntry: return coop::travel::on_gate_entry(c);
         case Site::ShopGrant: return coop::purchases::on_grant(c);
         case Site::OfflineGoods: return coop::purchases::on_offline_only(c);
         case Site::ShopTile: return coop::purchases::on_shop_tile(c);
@@ -295,6 +407,37 @@ int hook(::Ctx* c, uint64_t addr, void* user) {
         case Site::ClaimVisitor: return coop::money::on_claim_visitor(c);
         case Site::BuyCount: return coop::challenges::on_buy_visitor(c);
         case Site::TalkedTo: return coop::feed::on_talked_to(c);
+        case Site::Fed: return coop::feed::on_fed(c);
+        case Site::FriendGift: return coop::friendship::on_gift_apply(c);
+        case Site::UseRefused: return coop::owner::on_use_refused(c, addr - st().base);
+        case Site::Befriend: return coop::newcomer::on_befriend(c);
+        case Site::SharedLeave: return coop::gimmicks::on_shared_leave(c, addr - st().base);
+        case Site::TalkOwn: return coop::talk::on_talk_own(c);
+        case Site::GrantNoUse: return coop::owner::on_grant_no_use(c);
+        // the session's doors in the menus (pkp_coop_doors.cpp)
+        case Site::LinkMenu: return coop::doors::on_link_menu(c);
+        case Site::PauseMenu: return coop::doors::on_pause_menu(c);
+        // a co-op start past the title (pkp_coop_title.cpp)
+        case Site::PastTitle: return coop::title::on_past_title(c);
+        case Site::HostUseEnd: return coop::owner::on_host_use_end(c);
+        case Site::TalkCondParent: return coop::talk::on_cond_parent(c);
+        case Site::TalkCondVisitor: return coop::talk::on_cond_visitor(c);
+        case Site::ReleaseGate: return coop::linkqueue::on_release_gate(c, addr - st().base);
+        case Site::RequestSend: return coop::linkqueue::on_send_request(c);
+        case Site::OwnerApply: return coop::owner::on_owner_apply(c);
+        case Site::OwnerPress: return coop::owner::on_press(c);
+        case Site::OwnerNotice: return coop::owner::on_notice(c);
+        case Site::OwnerRefused: return coop::owner::on_grant_reply(c);
+        case Site::TakeoutStore: return coop::takeout::on_remove_store(c);
+        case Site::DepositStore: return coop::deposit::on_store(c);
+        case Site::DepositConfirm: return coop::deposit::on_confirm(c);
+        case Site::StoryFollow: return coop::follow::on_story_follow(c);
+        case Site::TalkRecArmed: return coop::talkrec::on_armed(c);
+        case Site::TalkSwapParent: return coop::talk::on_swap_parent(c);
+        // a dropped player is waited for (pkp_coop_drop.cpp)
+        case Site::TripFile: return coop::drop::on_trip_file(c, addr - st().base);
+        case Site::SimStep: return coop::drop::on_sim_step(c);
+        case Site::Error3103: return coop::drop::on_error(c);
         default: return 0;
     }
 }
@@ -323,6 +466,7 @@ void install(const FeatureInstall& in) {
         s.key[i] = static_cast<uint8_t>(nib(launch.member[2 * i]) << 4 | nib(launch.member[2 * i + 1]));
     s.base = in.base;
     coop::wirelog::install();
+    coop::savecopy::install();   // before the game opens its save
     s.hooks = &in.hooks;
     s.armed.store(false);
     s.checked.store(false);
@@ -336,17 +480,29 @@ void install(const FeatureInstall& in) {
 }
 
 // Play mode's frame (main is loaded): the first call checks the sites and arms the hooks or removes them.
+// Co-op off at the check tells the player too (a start-up notice can be missed behind the title, so it is posted again once, at the
+// first gameplay frame); otherwise they only find their own world and no host.
 void frame(bool in_game, double, play::GameFrame*) {
     State& s = st();
     s.in_game.store(in_game, std::memory_order_relaxed);
+    if (s.off_text && in_game) {
+        notices::post(kOffNotice, strings::get(s.base, *s.off_text), kOffNoticeSeconds);
+        s.off_text.reset();
+    }
     if (!s.ids[0] || s.checked.exchange(true)) return;
     HookSite at[kSiteCount];
     for (size_t i = 0; i < kSiteCount; ++i) at[i] = kSites[i].at;
     uint32_t word = 0;
     if (const HookSite* bad = first_bad_site(s.base, at, kSiteCount, &word)) {
         remove_hooks(s);
-        NXLOG_W(kTag, "Co-op: off: main+0x%llx is not the expected hook site (word %08x, expected %08x)",
-                static_cast<unsigned long long>(bad->site), word, bad->word);
+        const bool relink = site_missing_from_lift(*bad, word);
+        NXLOG_W(kTag, "Co-op: off: main+0x%llx is not the expected hook site (word %08x, expected %08x)%s",
+                static_cast<unsigned long long>(bad->site), word, bad->word,
+                relink ? " (the lift has no hook site there: Set up again)"
+                       : " (this game build or dump is not the one co-op was made for)");
+        s.off_text = relink ? strings::Str::CoopOffSetUpAgain : strings::Str::CoopOffVersion;
+        notices::post(kOffNotice, strings::get(s.base, *s.off_text), kOffNoticeSeconds);
+        if (in_game) s.off_text.reset();   // already in gameplay: this showing is the gameplay one
         return;
     }
     s.armed.store(true, std::memory_order_release);
@@ -385,6 +541,13 @@ void game_frame(::Ctx* c) {
     coop::answers::tick();
     coop::friendship::tick(c);
     coop::feed::tick(c, s.in_game.load(std::memory_order_relaxed));
+    coop::newcomer::tick(c, s.in_game.load(std::memory_order_relaxed));
+    coop::takeout::tick(c);
+    coop::deposit::tick(c, s.in_game.load(std::memory_order_relaxed));
+    coop::follow::tick(c, s.in_game.load(std::memory_order_relaxed));
+    coop::savecopy::tick(c);
+    coop::talkrec::tick();
+    coop::drop::tick(c, s.in_game.load(std::memory_order_relaxed));
 }
 
 void remove() {   // the registry has removed the hooks
@@ -392,6 +555,7 @@ void remove() {   // the registry has removed the hooks
     s.armed.store(false);
     s.checked.store(false);
     s.in_game.store(false);
+    s.off_text.reset();
     for (uint32_t& h : s.ids) h = 0;
     s.hooks = nullptr;
     coop::bags::reset();   // first: it writes its records' files under this player's member key
@@ -428,6 +592,16 @@ void remove() {   // the registry has removed the hooks
     coop::records::reset();
     coop::answers::reset();
     coop::jobs::reset();
+    coop::owner::reset();
+    coop::newcomer::reset();
+    coop::doors::reset();
+    coop::title::reset();
+    coop::takeout::reset();
+    coop::deposit::reset();
+    coop::follow::reset();
+    coop::savecopy::reset();
+    coop::talkrec::reset();
+    coop::drop::reset();
 }
 
 }  // namespace

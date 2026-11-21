@@ -141,6 +141,11 @@ constexpr uint64_t kStateAutosaveObj = 0x3b9590;  // game state + this: the auto
 constexpr uint64_t kAutosaveNow = 0x4577e4;       // (autosave, now, backup): asks it to save; does nothing unless it is on and idle
 constexpr uint64_t kStateAutosave = 0x3bb5e0;     // game state: u32, the autosave's step: 0 idle, 1 snapshot, 2 writing, 3..5 finishing
 constexpr uint64_t kStateAutosaveFlags = 0x3bb5e8;   // game state: u32, bit 0 the autosave is on, bit 2 a save was asked for now
+constexpr uint64_t kWorldDirty = 0x3558bc4;       // main + : u8, "the world changed since the last save"; the autosave's step 1 stops
+                                                  // without writing while it is 0 (0x5adc94); saves clear it (pkp_coop_takeout.cpp)
+constexpr uint64_t kSaveManager = 0x35619d0;      // main + : the save manager (its job queue; the autosave's step 2 waits on it)
+constexpr uint64_t kSaveMgrJob = 0xb8, kSaveJobResult = 0x608;   // manager + : the last job; job + : u32 its result, 0 written
+                                                  // (the autosave's step 2 / 3, 0x5add04 / 0x5add68: null job or 0 = written)
 constexpr uint64_t kStateEvent = 0xd0, kEventBusy = 0x6ea;   // game state: the event bus, its busy byte
 
 // ---- the main loop ----
@@ -256,5 +261,71 @@ constexpr uint64_t kFriendGift = 0x175;      // u8 once-gate of a gift's friends
 constexpr uint64_t kFriendDaily = 0x177;     // u8 once-gate of the talk / play friendship (0x4aae54 slot 174 and five more callers)
 constexpr uint64_t kFriendFlag17a = 0x17a;   // u8 set by script callback slot 175 (0x4ab268)
 constexpr uint64_t kFriendOnce17d = 0x17d;   // u8 once-gate of 0x3a83a0's friendship (0x3a8954 reads, 0x3a8d44 sets)
+// ---- gimmick ownership (pkp_coop_owner.cpp; modding-docs coop-v2/role-census/build/owner.md) ----
+constexpr uint64_t kOwnIndexOf = 0x25a480;          // () -> u8 this process's member index (NM+0xb3381), the owner byte's value
+constexpr uint64_t kGimmickOwnerApply = 0x538f60;   // (&kind, x, y, z, &idx, take, quiet, slot): an ownership take or release
+constexpr uint64_t kGimmickOwnerMsg = 0x74fd48;     // (msg): builds a SyncGimmickOwnership message
+constexpr uint64_t kSendToHostForced = 0x30c69c;    // (msg): sends a message to the host, past the NM+0xb3348 send gate
+constexpr uint64_t kSendGate = 0x25af7c;            // () -> u8 NM+0xb3348, the gate 0x2cb584 drops a message at
+// ---- the session's doors and the start (pkp_coop_doors.cpp, pkp_coop_title.cpp) ----
+// The PC's Link Play screen: u32 +kLinkMenuState its state; kLinkMenuEnter(screen, state) enters one (it calls the entry 0xf282a8).
+constexpr uint64_t kLinkMenuEnter = 0xf266d0, kLinkMenuState = 0xa4;
+// The pause menu (UI class 0xba): u32 +kPauseMenuState its state, u8 +kPauseMenuMember the member a choice names (0xff: none);
+// kPauseMenuEnter(menu, state, 1) enters one (it calls the entry 0xfb9ea0).
+constexpr uint64_t kPauseMenuEnter = 0xfb8f58, kPauseMenuState = 0xa4, kPauseMenuMember = 0x108;
+// The UI objects: *(main+kUiOwner) +kUiList the list (8-byte entries), +kUiCount their number; the title is entry kTitleClass. The
+// title object: u32 +kTitleState, u32 +kTitleResult (-1 until answered; 1 continue), u8 +kTitleInput (input on).
+constexpr uint64_t kUiOwner = 0x3561780, kUiList = 0x18, kUiCount = 0x20, kTitleClass = 0x65;
+constexpr uint64_t kTitleState = 0xa4, kTitleResult = 0xa8, kTitleInput = 0xb8;
+constexpr uint64_t kTitleNameMissing = 0xf71250;   // () -> bit 0: the player's name needs the name entry before the save continues
+// Save root + kSaveFlags (the CMNDAT header copy): bit kSaveUncleanExit = the last save was written online ("did not disconnect").
+constexpr uint64_t kSaveFlags = 0xa0;
+constexpr uint8_t kSaveUncleanExit = 0x2;
+// ---- gimmick ownership, the tester log (pkp_coop_owner.cpp) ----
+constexpr uint64_t kPlacedObjects = 0x35616f0;      // [main+]: the placed-object manager (its map at +0x46d0)
+constexpr uint64_t kPlacedObjectAt = 0x753200;      // (manager, x, y, z) -> the placed object at the cell, 0 when none
+// ---- the story's materials drop (pkp_coop_deposit.cpp, pkp_coop_records.cpp; modding-docs coop-v2/role-census/build/
+// materials-deposit.md): class 0x326dc98, placed kind 0x1d9, container type 0x11 (one record, slots 1295..1297 of the common store) ----
+constexpr uint64_t kDropClass = 0x326dc98;          // main +: the class's vtable
+constexpr uint16_t kDropKind = 0x1d9;
+constexpr uint8_t kDropType = 0x11;                 // its container type (gimmick +0x4b)
+constexpr uint64_t kDropStage = 0x4a, kDropScreen = 0x4c, kDropTimer = 0x50;   // gimmick +: u8 stage, u8 screen up, f32 open timer
+constexpr uint64_t kDropUse = 0x7e77a4;             // (g, player selector): the class's use after the press's free check
+constexpr uint64_t kDropBlock = 0x7e7f20;           // (g, open): the block's open state, as the use and the close set it
+constexpr uint64_t kPlayerEvent = 0x74fb80;         // (event, on, ptr, selector, 0): the use's and the close's event 0xf
+constexpr uint64_t kDropEventPtr = 0x3483b38;       // GOT: the pointer the close passes to kPlayerEvent as x2
+constexpr uint64_t kSceneQueue = 0x2e6ce0;          // (selector, scene, &u16, -1, 0, 0, 0, 0; stack u8 +0, u16 +8, u8 +0x10)
+constexpr uint64_t kSceneActorPtr = 0x3482ef8;      // GOT: the u16 the close passes by address as x2 of kSceneQueue
+constexpr uint64_t kStoreSlice = 0x5b1c84;          // (holder, type, id, temp, &first, &count) -> the store the slice is in
+constexpr uint64_t kStoreHolder = 0x13d4920;        // save root +: the item holder (common store at +0x1050)
+constexpr uint64_t kFlagTest = 0x377cc;             // (flag) -> bit 0: the save's flag is set
+constexpr uint64_t kDropTest = 0x5b8e34, kDropTestArg = 0x1718bb0;   // (save root + arg) -> bit 0: stage 8's condition (category 0x13)
+constexpr uint64_t kSaveDrop = 0x73b258;            // save root +: m_rocketHouse (2 x 16 B): +0 u32 x | y << 16, +4 u16 z,
+constexpr uint64_t kSaveCampaignHistory = 0x6cec38; // save root +: m_eventCampaignHistory, 15 slots x 6 B (slot 0 unused, areas 1..14):
+constexpr size_t kCampaignHistoryBytes = 0x5a;      //   byte 0 bit 0 / bit 3 read by the campaign creatures' talk test 0x29d910 / 0x284660
+constexpr size_t kDropRecordBytes = 0x20;           //   +8 u32 electricity (category 1), +0xc u16 the stage
+constexpr uint64_t kDropStagesTable = 0xa20;        // data-table manager +0x10 +: #1108, the stages (16 B rows)
+constexpr uint64_t kDropItemsTable = 0x3d0;         // data-table manager +0x10 +: #514, u16 item and u8 category per row (101 rows)
+constexpr uint64_t kPlayedScenes = 0x4a2cec;        // save root +: m_playedContentsSkitFlag, scene s at bit s & 7 of byte s / 8
+// ---- co-op, a creature's talk record (pkp_coop_talkrec.cpp): 0x38 bytes per chara (< kFriendCount), save root + ----
+constexpr uint64_t kTalkRecOwn = 0x93ba0, kTalkRecHostCopy = 0x15567a8, kTalkRecCloud = 0xae5138, kTalkRecSize = 0x38;
+constexpr uint64_t kTalkRecArmed = 0x10;   // u8, set by script callback slot 195 (0x4ae68c), read by conditions 29 / 31 of main+0x34c3060
+// ---- a dropped player is waited for (pkp_coop_drop.cpp; modding-docs coop-session/LEAVE-DOORS-RE.md, DISCONNECT-RE.md) ----
+// The trip filers (main offsets of their entries): 0xbd45c(record, reason, member, flag) files a leave or a send-home, 0xbdc68(record)
+// the host's Close the Connection; both file only while the record's u32 phase (game state + kTripRecord) is >= kTripRecordReady.
+constexpr uint64_t kFileTrip = 0xbd45c, kCloseTrip = 0xbdc68;
+constexpr uint64_t kTripRecord = 0x3bb600;
+constexpr uint32_t kTripRecordReady = 5;
+// Return addresses into the filers' callers: the pause menu's 0xbd45c call (state 0x10: reason 0 the host disbands, 4 a teammate
+// leaves; doors refuse reason 2) and the kick handler 0x5483a0's (RequestRejectMember: reason 1, kind 8 home).
+constexpr uint64_t kPauseFileReturn = 0xfba740, kKickFileReturn = 0x54841c;
+constexpr uint32_t kTripDisband = 0, kTripLeave = 4;
+// kStateAutosaveFlags: a save was asked for now (the autosave starts it at its next step).
+constexpr uint32_t kAutosaveAskedNow = 0x4;
+// The network manager NM = *(main + kNetManager); NM + kNetQualityTimer: f32 seconds a member's ping has been over 1499 (0x53ca60;
+// at 20 s it self-disconnects, reason 0).
+constexpr uint64_t kNetManager = 0x3561a20, kNetQualityTimer = 0xb3374;
+// Error 3103: KTGL_ONLINE_E_SESSIONP2P_NETWORK_LOST, the result 0x547278 shows when the session's network is gone.
+constexpr uint32_t kErrorSessionLost = 0x80401103;
 
 }  // namespace nxrt::games::pkp::layout

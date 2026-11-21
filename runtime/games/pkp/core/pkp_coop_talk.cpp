@@ -14,6 +14,8 @@
 // the event's talk already holds this player's lock for it, and that caller does not look at the answer. One to another character
 // asks for that character's lock as a press does. A member's talk takes the host's path in the talk handler (on_talk_kind),
 // so a member gets the character's own talk, quest talks too, instead of the visitor's stub; the lock above keeps it to one player.
+// A member is also the own player of every creature that lives in the group's town (on_talk_own): its talks with a resident go on to
+// the same later stages as the host's, outside Cloud Island (whose records and visitor rules are the game's own).
 //
 // The game, 2.0.1:
 //   0x3180e0(obj, w1 slot, x2 &actor id, w3 flags)  the one real talk start (every other caller of the talk selector only probes).
@@ -36,11 +38,67 @@
 //   0x4c06d8 (midhook)                the talk handler 0x4c024c, online and outside Cloud Island: `orr w8, w25, w0` with w0 = IsHost
 //                                     0xa40bc; w8 bit 0 clear takes the visitor path 0x4c07e4 (the stub talk kinds 10 / 11), set the
 //                                     host's 0x4c06e0 (kind 3, or the character's talk table). w0 is not read after it
+//   0x4c0574 (midhook)                the same handler's `tbz w0, #0, 0x4c059c` after 0x332c80(comp x22, &own user id) at 0x4c0570:
+//                                     "this player is the creature's own". 0x332c80 reads the creature's 0x180-byte friend record
+//                                     (Cloud Island's set, else the own records or, on a visitor, its copy of the host's: 0x376c4) and
+//                                     is true when the user id is its parents (+0x8, m_ParentsUserID) or one of the 10 ids of the ring
+//                                     at +0x31 (m_AcquaintanceParentsUserID). True returns 0: this stage gives no talk and the selector
+//                                     0x4c3ec8 goes on to its later stages (the requests, the crafting talk, the talk tables). False on
+//                                     a creature with parents (and not 0x52 / 0x72 / 0xaf) skips the IsHost split above: online,
+//                                     outside Cloud Island, it writes talk id 4 (0x4c06f4) and returns 1, so no later stage runs.
+//                                     Off Cloud Island only the host writes parents, so a resident's parents is the host's id, and the
+//                                     ring is not written by a talk there (its writer 0x3b8128 runs from 0x2a25c0, whose callers are
+//                                     0x4eab20 for a creature a player made appear, 0x2a0b40 whose one caller seen, the host's 0x2aec60,
+//                                     passes w4 = 1, which skips it, and RequestAcquaintance for the characters of idx 0x400..0x40e):
+//                                     a member whose copy holds a resident's parents gets talk id 4 for it, and for 0x52 / 0x72 /
+//                                     0xaf the host path 0x4c06e0, where the host goes on to the later stages for all of them.
+//                                     w0 is not read after the tbz
+// Inside a talk, the selector's later stages read talk conditions (the table main+0x34c2958 + id*8, by the condition-set readers;
+// condition 0x52 also straight from script callback slot 208 0x4afa24 at 0x4afbe8, whose true starts talk script 0x1b3). Two answer
+// a member differently from the host for the same creature:
+//   0x4d3368 (condition 0x52)         the talk 0x1b3 (#971 row 13, #1093 row 3, callback 208): the player's held item (0x2ec2ec on
+//                                     the bag, per player) is item 0x5c, the species is not 0x22 / 0x6f, and the creature lacks
+//                                     specialty 0x20 (0x28586c false returns 1 at 0x4d34dc) or this player is not its parent:
+//                                     w19 = (w22, its row's +0x1a in 0x11f8..0x23ee with a +0x65 bit) | 0x3b7948 (own records R+0x120,
+//                                     no visitor select: parents == own user id) | 0x284ef4 (the record as selected: parents == own
+//                                     id); then, online, off Cloud Island, GM+0x11 bit 0 clear, 0x4d35f4 `bl IsHost` and 0x4d35f8
+//                                     `eor w8, w0, #1` (midhook): w8 | w19 clear returns 1. So a member got 0 for every creature with
+//                                     that specialty, where the host gets 1 for one with no parents. Its own-save term reads the
+//                                     member's own world and its selected term compares the host's parents with the member's id, so
+//                                     the host's answer is not a role flip: here x0 = 1 (IsHost) and x19 = w22 | the creature's
+//                                     record in the member's copy of the host's (R+0x14c2d28 + (data id w21 + 4) * 0x180, the
+//                                     chara index 0x3b7948 uses) has parents, compared with the null id main+0x3566a38 as 0x285100
+//                                     does. Off Cloud Island only the host writes parents (later-talks.md), and the game's
+//                                     replication (kind 0xb, +0x8..+0x1a) keeps them current in the copy, so this is "the host is its
+//                                     parent". w21 (the data id, 0x4d3538) and w22 (0x4d3594) are set on the one path to 0x4d35f8;
+//                                     x19 is read only by the `orr` at 0x4d3604
+//   0x4d0620 (condition 0x25)         `b IsVisitor`, a tail call (no role row): its one user, #960 row 35 (conditions 0x25, 0x24 no
+//                                     parents, 0x22 online, 0xa4 species 0x46 / 0x95), offers the visitor's own first talk with those
+//                                     two at the last stage 0x4c8ba0. The host never gets it; a member in the session off Cloud
+//                                     Island now does not either (entry hook: returns 0). Condition 0x16 (0x4cfb08 `b IsHost`) has no
+//                                     user: no table row, no fixed-offset call ([table + 0xb8] = 0x17 and + 0x290 = 0x52 are the
+//                                     only ones), and the loads at 0x4c9bd0 / 0x4c9cd4 in 0x4c8ba0 index hash buckets on its stack
+// Talk 0x1b3's answer, script callback slot 119 0x4a17fc (a creature takes the held Star Piece, item 0x5c, and gives its item), tests
+// condition 0x52's terms again before it queues line 437 ("give it to someone else"), 438 ("not a good time") or the exchange (line
+// 436, the give 0x45f580 -> slot 27, the receive 0x3bcdc0 -> slot 28). Lines 436..438 are talk lines, not scripted events:
+// 0x339580 queues a record of id 0 with kind +0x664 = 3 and the line at +0x1b4, which the runner (0x4763e8) plays as one script
+// command 3 (0x431200, the message), so they write no saved state. Off Cloud Island its parent term is again the own-save one
+// (record R + data id * 0x180 + 0x728 = own record +0x8, m_ParentsUserID, against m_UserID R+0x13d3a89), or'd with the row term at:
+//   0x4a1adc (midhook)                `orr w24, w22, w8`: w22 the row term (+0x65 bit, item +0x1a in 1..0x11f7), w8 the parent term,
+//                                     w24 (off Cloud Island) the data id (1..0x3ff, 0x4a19ac). A member's w8 becomes "the group's
+//                                     record of the creature (the member's copy of the host's) has parents", as at 0x4d35f8, so a
+//                                     member is refused where the host is, for the town's residents, and accepted for a creature
+//                                     with none. w8 is read by this `orr` alone (0x4a1ae8 calls out, 0x4a1af0 loads x8). The
+//                                     0x284ef4 term that follows compares the copy's parents with the member's own id (false off
+//                                     Cloud Island, where only the host writes parents). The IsHost answer at 0x4a1b70 that picks
+//                                     line 438 is a role row (pkp_coop_role_table.inc)
 // The refusal's line goes to the game's message log through notice::line (pkp_coop_notice.cpp), on the talker's slot; the slot of
 // this player's own talk starts is handed to the notices.
 #include "core/pkp_coop_internal.h"
+#include "core/pkp_strings.h"
 #include "core/pkp_guest.h"
 #include "core/pkp_journal.h"
+#include "core/pkp_layout.h"
 
 #include <algorithm>
 #include <cstring>
@@ -68,10 +126,18 @@ constexpr uint64_t kQueue = 0x3565100, kQueueSlot = 0x20fa0, kQueuePending = 0x2
 constexpr uint32_t kRunnerIdle = 9;
 constexpr uint8_t kSlots = 2;
 
-constexpr const char* kBusyLine = "This NPC is in a conversation with someone.";
-
 constexpr uint64_t kFlagsReg = 3;       // 0x3180e0's w3: bit 0 clear, a talk started from inside a running event (0x48fd50)
-constexpr uint64_t kIsHostReg = 0;      // at 0x4c06d8: IsHost's answer, or'd into the "take the host's path" bit
+constexpr uint64_t kIsHostReg = 0;      // at 0x4c06d8: IsHost's answer, or'd into the "take the host's path" bit (also at 0x4d35f8)
+constexpr uint64_t kOwnReg = 0;         // at 0x4c0574: 0x332c80's answer, "this player is the creature's own"
+constexpr uint64_t kCompReg = 22;       // at 0x4c0574: the creature's component (actor vt+0x410 + 0x2ca0), or the stand-in
+constexpr uint64_t kNoComponent = 0x3567db0;   // main + : the stand-in component of a talk target with none
+constexpr uint64_t kHasParents = 0x285100;     // (comp) -> bit 0: its record (as this process selects it) has a parents user id
+constexpr uint64_t kCloudIsland = 0x77ecb0;    // () -> bit 0: Cloud Island
+constexpr uint64_t kCondRowReg = 22, kCondDataReg = 21, kCondParentReg = 19;   // at 0x4d35f8 (condition 0x52), see the header
+constexpr uint32_t kCharaOfData = 4;            // a creature's friend record index is its data id + 4 (0x3b7948's +0x600)
+constexpr uint64_t kParents = 0x8;              // friend record: 16 bytes, m_ParentsUserID
+constexpr uint64_t kNullUser = 0x3566a38;       // main + : the 16-byte null user id 0x285100 compares parents with
+constexpr uint64_t kSwapDataReg = 24, kSwapParentReg = 8;   // at 0x4a1adc (talk 0x1b3's answer, slot 119), see the header
 
 constexpr double kLease = 5.0;        // a grant not used for a talk by then is given back
 constexpr double kAskAgain = 2.0;     // a press on the same character asks again after this long without an answer
@@ -84,6 +150,7 @@ struct Held {
     double since = 0.0;
     int idle = 0;
     bool forced = false;   // the host-path line of this talk is written
+    bool owned = false;    // the "own creature" line of this talk is written
 };
 
 struct State {
@@ -176,7 +243,7 @@ int on_talk_start(::Ctx* c) {
     const uint8_t self = link::self();
     const auto it = s.holders.find(chara);
     if (it != s.holders.end() && it->second != self) {
-        notice::line(c, slot, kBusyLine);
+        notice::line(c, slot, strings::get(base(), strings::Str::CoopTalkBusy));
         journal::Rec(journal::Area::Talk, "lock").in("character=0x%08x (data id %u, idx %u) slot=%u", chara, chara >> 16 & 0x7fff,
                                                      chara & 0xffff, slot)
             .refused("held by n%u", it->second);
@@ -228,6 +295,62 @@ int on_talk_kind(::Ctx* c) {
     }
     c->x[kIsHostReg] = 1;
     return 0;
+}
+
+int on_talk_own(::Ctx* c) {
+    // Only where the game said no, for a member, on a creature with parents outside Cloud Island: a creature with none keeps false
+    // (its first talk is the IsHost split above, on_talk_kind and pkp_coop_newcomer.cpp), and Cloud Island keeps its own rules.
+    if ((c->x[kOwnReg] & 1) || !quests::member_rules()) return 0;
+    const uint64_t comp = c->x[kCompReg];
+    if (comp == base() + kNoComponent || (guest::call(c, base() + kCloudIsland, 0) & 1)) return 0;
+    if (!(guest::call(c, base() + kHasParents, comp) & 1)) return 0;
+    State& s = st();
+    if (s.held && s.held->talking && !s.held->owned) {   // once per talk, as on_talk_kind
+        s.held->owned = true;
+        journal::Rec(journal::Area::Talk, "own creature").in("character=0x%08x", s.held->chara).out("a resident of the town: later stages");
+    }
+    c->x[kOwnReg] = 1;
+    return 0;
+}
+
+int on_cond_parent(::Ctx* c) {
+    // Reached only online, off Cloud Island, with GM+0x11 bit 0 clear (0x4d35cc..0x4d35f0), and data id - 1 < 0x3ff (0x4d353c).
+    if (!quests::member_rules()) return 0;
+    const uint32_t chara = static_cast<uint32_t>(c->x[kCondDataReg] & 0xffff) + kCharaOfData;
+    const uint64_t root = guest::rd<uint64_t>(base() + layout::kSaveRoot);
+    const uint64_t rec = root + layout::kFriendHostCopy + static_cast<uint64_t>(chara) * layout::kFriendSize;
+    if (!root || chara >= layout::kFriendCount || !guest::ok(rec + kParents, 16) || !guest::ok(base() + kNullUser, 16)) return 0;
+    const bool parents = guest::rd<uint64_t>(rec + kParents) != guest::rd<uint64_t>(base() + kNullUser) ||
+                         guest::rd<uint64_t>(rec + kParents + 8) != guest::rd<uint64_t>(base() + kNullUser + 8);
+    c->x[kCondParentReg] = (c->x[kCondRowReg] & 1) | (parents ? 1 : 0);
+    c->x[kIsHostReg] = 1;
+    return 0;
+}
+
+int on_swap_parent(::Ctx* c) {
+    // Off Cloud Island only: there w24 is the data id; on Cloud Island (w24 = data id + 4, w8 the Cloud record's +0x178) the game's
+    // own rules stay. Any read that fails leaves the game's answer.
+    if (!quests::member_rules() || (guest::call(c, base() + kCloudIsland, 0) & 1)) return 0;
+    const uint32_t data = static_cast<uint32_t>(c->x[kSwapDataReg] & 0xffff);
+    if (data - 1 >= kDataIds) return 0;
+    const uint32_t chara = data + kCharaOfData;
+    const uint64_t root = guest::rd<uint64_t>(base() + layout::kSaveRoot);
+    const uint64_t rec = root + layout::kFriendHostCopy + static_cast<uint64_t>(chara) * layout::kFriendSize;
+    if (!root || chara >= layout::kFriendCount || !guest::ok(rec + kParents, 16) || !guest::ok(base() + kNullUser, 16)) return 0;
+    const bool parents = guest::rd<uint64_t>(rec + kParents) != guest::rd<uint64_t>(base() + kNullUser) ||
+                         guest::rd<uint64_t>(rec + kParents + 8) != guest::rd<uint64_t>(base() + kNullUser + 8);
+    if (parents != ((c->x[kSwapParentReg] & 1) != 0))
+        journal::Rec(journal::Area::Talk, "star piece swap")
+            .in("data=%u", data)
+            .out(parents ? "the group's creature: declined, as for the host" : "no parents in the group: taken, as for the host");
+    c->x[kSwapParentReg] = parents ? 1 : 0;
+    return 0;
+}
+
+int on_cond_visitor(::Ctx* c) {
+    if (!quests::member_rules() || (guest::call(c, base() + kCloudIsland, 0) & 1)) return 0;
+    c->x[0] = 0;
+    return 1;
 }
 
 int on_talk_end(::Ctx* c) {

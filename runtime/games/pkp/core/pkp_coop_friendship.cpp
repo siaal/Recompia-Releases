@@ -22,6 +22,9 @@
 //   object +0x1ac / +0x1b0, the only writers 0x3bb874 / 0x3bc1b0), the talk-end walk 0x480b60 copies both into its entries and the
 //   host's apply 0x2197a0 runs 0x3bb660 / 0x3bc034 with them (0x21ba5c, 0x21ba8c; 0 skips). The host's apply also re-runs a member's
 //   gift 0x46e308 (0x21c484), but with w3 = 0x77ecb0's answer, which skips its friendship (0x46e610) outside Cloud Island.
+//   A gift made in a talk (talk callback slot 27 0x49101c, fed by the give event of 0x45f580) never calls 0x46e308 on a visitor: its
+//   visitor arm (0x491200) only writes the talk record that the host's apply reads, so that re-run is the gift's only friendship. Only
+//   the other caller 0x4b7540 runs 0x46e308 (w3 = 1) on a member itself.
 // So outside Cloud Island a member's gains change nothing anywhere: the player report "friendship grows only for the host".
 //
 // Here, a member in the session, outside Cloud Island:
@@ -32,6 +35,10 @@
 //     game has them), and the talk event step's gain when this player holds no talk lock (an event this player did not start by a talk:
 //     kept out until it is known whether another process runs the same event);
 //   - script callback slot 175 (0x4ab268) sets +0x17a in the member's copy only (0x4ab37c..0x4ab3c0): sent likewise (kind 2).
+//   - a gift made in a talk: the authority's apply of the member's talk record re-runs 0x46e308 with w3 = 1 (midhook 0x21c46c), as on
+//     Cloud Island, so its friendship part runs there once. That part tests the gift once-gate +0x175 of the record the authority
+//     selects (its own, 0x46e68c) and sets it after the gain (0x46e824); the FriendAsk path for 0x46e7c4 tests and sets the same byte
+//     of the same record (apply_gain), so a gift never counts twice, whichever way it arrives.
 // The authority finds the creature (0x333f10 on the handle: its component, or the static stand-in main+0x3567db0 when the actor is not
 // loaded here, which 0x3bb660 would dereference unchecked at 0x3bb7a4: dropped), and when the caller's byte is still clear in its own
 // record makes the game's own gain 0x3a89fc(comp, amount, 0) (w2 = 0 as the game's apply 0x21ba5c passes) and sets the byte, as the
@@ -66,6 +73,7 @@ constexpr uint64_t kRecordOf = 0x3b7708;      // (comp) -> its 0x180 record as t
 constexpr uint64_t kAddPoints = 0x3a89fc;     // (comp, s16 amount, w2 flag)
 constexpr uint64_t kStage11 = 0x77ecb0;       // () -> bit 0: Cloud Island
 constexpr uint64_t kCompHandle = 8, kCompChara = 0xc;
+constexpr uint64_t kGiftReturn = 0x46e7c4;   // the gift 0x46e308's bl 0x3a89fc returns here
 
 constexpr uint8_t kAskGain = 1, kAskFlag = 2;   // FriendAsk kinds
 constexpr size_t kQueueMax = 32;
@@ -202,6 +210,17 @@ void apply_gain(::Ctx* c, uint8_t origin, const Ask& a) {
 }  // namespace
 
 int on_add_points(::Ctx* c) {
+    if (authority_here() && link::in_session() && c->x[30] == base() + kGiftReturn) {
+        // A gift's gain on the authority (its own talk gift, or a member's re-run by on_gift_apply): logged with the points before it.
+        const uint64_t comp = c->x[0];
+        const bool real = comp != base() + kNoComponent && guest::ok(comp, kCompChara + 4);
+        const uint32_t chara = real ? guest::rd<uint32_t>(comp + kCompChara) : 0;
+        const uint64_t rec = real ? record(layout::kFriendOwn, chara) : 0;
+        if (rec)
+            NXLOG_I(kTag, "Co-op friendship: a gift's gain of %d with chara %u here (points %u before)", static_cast<int16_t>(c->x[1]),
+                    chara, guest::rd<uint16_t>(rec + layout::kFriendPoints));
+        return 0;
+    }
     if (!member_here()) return 0;
     const int16_t amount = static_cast<int16_t>(c->x[1]);
     const uint64_t comp = c->x[0];
@@ -251,6 +270,20 @@ int on_name_tag(::Ctx* c) {
     if (!member_here() || (c->x[0] & 1)) return 0;
     c->x[0] = 1;
     c->x[22] += layout::kFriendHostCopy - layout::kFriendOwn;
+    return 0;
+}
+
+int on_gift_apply(::Ctx* c) {
+    // Midhook 0x21c46c in the host's talk-end apply 0x2197a0 (reached only from the host receive step 0x216860, case 0xa / 0xb: another
+    // player's talk record): `and w3, w0, #0x1` after 0x77ecb0, which becomes 0x46e308's w3 at 0x21c484. x0 bit 0 = Cloud Island; x0 is
+    // overwritten right after (0x21c470), so nothing else reads the changed value. w23 = the gift's item (0x21c458) and w20 its count
+    // (0x21c464), both written to the context at the call 0x77ecb0 just before (callee-saved, unchanged by it).
+    // The story waits on this gain: quest 9's contents (#7136 record 0x47, condition 0x884 op 2: +0x2c >= n) need the points of data
+    // id 13 >= 10 or of data id 28 >= 15 before record 0x49 gives data id 44 the scene 103, whose end closes quest 9.
+    if (!authority_here() || !link::in_session() || (c->x[0] & 1)) return 0;
+    c->x[0] = 1;
+    NXLOG_I(kTag, "Co-op friendship: a member's talk gift (item %u x%u) is re-run here with its friendship part",
+            static_cast<unsigned>(c->x[23] & 0xffff), static_cast<unsigned>(c->x[20] & 0xff));
     return 0;
 }
 

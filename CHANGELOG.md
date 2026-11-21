@@ -14,6 +14,7 @@
 - Teammates now get Life Coins, and each player claims their own: every player can claim each finished challenge at the PC for themselves and gets its coins into their own wallet, once, including challenges the host claimed first (a teammate's PC showed 0, and only the host could claim). Coins stay each player's own, as in the game's Link Play. Use **Set up again** once after updating to relink the game. Your shaders are kept.
 - A teammate's shop buys now count toward the town's "buy items" challenges
 - Area gates open for everyone in a co-op session, and the group can walk through: before, each press only played the opening again and nobody got in. A gate any player opens is open for the whole group, including players who join later
+- Going through an area gate in a co-op session now asks the whole group first, with the game's own travel poll, before the screen fades: on a yes everyone goes to the new area together, on a no you stay at the gate. Before, the host's screen could stay black for good after walking through a gate to an area nobody had been to yet, and a teammate could not go through at all
 - Each player's bag is now kept by the co-op save itself and given back at every join, so a rejoin, drop or crash no longer empties or swaps a bag. A teammate's bag is also no longer emptied at each area change, and no longer reset when the host turns down a request ("Your items have been reset.")
 - Teammates get every unlock the group has in the game's own checks too: the Environment Level panel on the PC menu, for one, was missing for a teammate when the group unlocked it after they joined
 - The host's town and story records (who lives in town, a character's current work, the weather and light the story set, a wild creature's visit) now reach every teammate's own save, so a teammate's world no longer lags behind the host's
@@ -26,17 +27,52 @@
 - Friendship with a creature now grows for every teammate, not only the host: a teammate's talks and time with a creature add to the group's friendship with that creature, and every teammate sees it
 - Creature requests are shared: when one player hands a request in, it is done for the whole group. Its bubble goes away above the creature for everyone, nobody has to talk to the creature again, and the items it gives go to every player
 - Talking to a character now counts for the group's story when a teammate does it, not only when the host does: a story step that waits for someone to talk to a creature moves on for a teammate's talk too
+- Teammates can put items into chests and drop items on the ground again. Since the co-op bags change, the host turned every such store or drop down ("A communication error occurred") and the items were lost: in neither the bag nor the chest. If the host does turn one down, the items now come back to the bag
 - Over the internet, a teammate whose connection drops large packets can talk to creatures again: the game's large packets now travel over the TCP link, so one lost packet no longer holds up everything the teammate sends after it
 - Co-op and Link Play now really check that every player has the same gameplay mods (Modtopia) on. Before, the mods were left out of the check, so players with different mods could join each other
 - When the host runs another Recompia version, the launcher now says so, instead of saying the host has different mods on
+- When co-op can't run with the installed game (after an update that needs **Set up again**, or a game version this build doesn't match), the game now says so on screen at start-up and again when you reach your world, instead of quietly loading your own world
+- Feeding a creature now counts for the group when a teammate does it, not only when the host does: food a teammate hands a creature is eaten in the host's world too, so the group's creature and its requests count it
+- A present a teammate gives a creature in a talk now adds to the group's friendship with it, as the host's presents do
+- An object whose press goes to a story step instead of its normal use is free again right after. Before, the player who pressed it kept it, and everyone else got "Someone else is using this right now." there for the rest of the session
+- The time of day in the story's opening now changes for teammates too: the evening and the morning after the night by the campfire reached only the host, and a teammate's clock could stay stuck at night
+- A newly discovered creature can now move in when a teammate talks to it first, not only the host: it becomes the town's resident for the whole group, and no longer asks the host again whether it can live here
+- The host's town and story records now reach teammates within seconds, also while the host is in a menu or a talk. Before, a teammate's world could wait a minute or two for them
+- Two special creatures that a teammate could only greet with a visitor's talk now start the same first talk for a teammate as for the host
+- A creature that was with a teammate at an object several players use together, when that teammate left the session, is let go again, as when the teammate stops using it
+- A teammate's everyday talks with a creature that lives in the town now go the same way as the host's, instead of the talk the game gives a visitor
+- An object a teammate presses that doesn't open for them is free again right away. Before, nothing happened for the teammate, and from then on everyone got "Someone else is using this right now." there
+- In a co-op session the PC's Link Play menu no longer opens, joins, closes or leaves a session (the launcher runs it), and the pause menu no longer sends a teammate home or turns one away. Each player still leaves with Save and Quit: the host's ends the session for everyone, a teammate's leaves it
+- A co-op start now goes past the title screen on its own into the group's world (a player whose name still needs entering gets the title as before, to press A and enter it), and a co-op save no longer says the game did not disconnect correctly
+- Teammates no longer get "Someone else is using this right now." at the object the story fills with materials in stages after the host has used it once
+- A talk that depends on the item a player holds now picks the same lines for a teammate as for the host
+- Teammates no longer get a visitor's greeting from two special creatures where the host gets the creature's usual talk
+- A chest or other object a teammate closes is now always free again for everyone. Before, a close while the game was still waiting on the host could leave it held by that teammate, and everyone else got "Someone else is using this right now." for the rest of the session
+- Co-op's own messages follow the game's language: the pop-ups that tell you what a teammate unlocked, found, bought or finished, and the busy line when a teammate is talking to a character, in all nine of the game's languages. The join and leave covers and co-op's other on-screen notices are translated too in French, Italian, German and Spanish (they stay in English in Japanese, Chinese and Korean for now)
+- Teammates can put materials into the story's materials drop (the lighthouse) and move its building on: the host's world checks the step once for the whole group, every teammate sees the new stage, and if the step can't be taken the materials stay in the drop to take back. Before, pressing it did nothing for a teammate
+- A teammate's shop purchase or story catch-up item that arrives while their bag is being put back (after the host refused a box store, at an area change or when joining) is no longer lost
+- A creature the story asks to follow a player no longer ends up following nobody when the story step ran for a teammate: it follows the host. Before, the fire starter creature at the start of the story could stop following anyone and just wander around, until the host restarted the game
+- A co-op save is now one world for the whole group: each time the host's game saves, the island (its areas and photos) is copied to every teammate's co-op save, and a teammate's own game no longer writes its island over that copy. Bags, Life Coins, the look and the Ordered Items and Gifts boxes stay each player's own. Every player's launcher then knows who has the newest copy, so the next session is hosted from it
+- When a teammate's talk opens a creature's special event talk, the host's world now keeps it, so the host gets that talk with the creature afterwards, as already happened on Cloud Island
+- Teammates now get the same answers as the host from the story and town records at a few more places: a creature the story keeps for one of its requests is not free for them, and a creature the town records leave out is left out for them too
+- A talk that depends on the blocks near a creature now picks the same lines for a teammate as for the host
+- Teammates now see the comfort-level notice of their own house in every area
+- Teammates can give a creature a Star Piece and get its item in exchange, as the host can. Before, the creature always said it wasn't a good time
+- When a teammate's connection drops, the others no longer lose the session: the world pauses and waits up to 2:00 for them, with a countdown that names who is awaited ((+) stops waiting), and the teammate who dropped rejoins in place through the normal join, bag and all. Save and Quit always stays possible, and the host closing the session is told apart from a drop
+- A teammate is never left playing alone in a copy of the group's island: when the host ends the session, when a teammate leaves with Save and Quit, or when the connection is lost and the host's session can't be found again, the teammate's game says so and closes. Start co-op again from the launcher to play on. The host's game stays open
+- The record of event campaigns is the group's: teammates get the host's, so a campaign creature can be talked to by a teammate whenever the host could
+
 
 ### Logs
 - pkp.log keeps the last five launches (pkp.log, then pkp.log.prev to pkp.log.prev4), and the log bundle takes all five
 - pkp.log now records much more for bug reports: quests and quest steps, talks, bags and storage boxes, area trips step by step, events, area levels and every co-op message, with the expected result next to the real one
 - In co-op, the log says when a teammate's quests, dex, recipes, unlocks, scenes or area levels differ from the host's, and which entries
+- That co-op check now runs every 30 seconds also while the host is in a menu or a talk. Before, it could wait two or three minutes
 
 ### Launcher
 - Pausing Set up on Windows now stops all of the compiler's work. Before, part of it kept running until the launcher closed, and the next **Set up again** could sit at "Linking pkp.exe"
+- Linux: the launcher finds its setup tools and game folder when its AppImage was unpacked into a plain folder, as RecompLauncher installs it. Before, Set up looked in the wrong folder
+- Installed through RecompLauncher, the launcher leaves updates to RecompLauncher and always uses its own install folder as the game folder, even when another copy on the PC has a different Install folder set
 
 ## 0.16.0 (build T: Tapir)
 
